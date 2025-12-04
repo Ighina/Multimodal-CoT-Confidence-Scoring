@@ -11,5 +11,5 @@ __author__ = "Research Team"
 from .dataset import *
 from .embeddings import *
 from .coherence import *
-from .models import *
+from .coherence_models import *
 from .evaluation import *

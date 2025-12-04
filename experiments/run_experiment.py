@@ -18,7 +18,7 @@ from src.coherence import (
     CrossModalCoherenceMetric,
     ChainConfidenceScorer
 )
-from src.models import ConfidenceHead, KDEDensityModel, GMMDensityModel
+from src.coherence_models import ConfidenceHead, KDEDensityModel, GMMDensityModel
 from src.baselines import (
     CoTLengthBaseline,
     LogProbabilityBaseline,

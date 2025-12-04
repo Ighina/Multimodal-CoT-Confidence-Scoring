@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from .internal_coherence import InternalCoherenceMetric
 from .cross_modal_coherence import CrossModalCoherenceMetric
-from ..models.density_model import DensityModel
+from ..coherence_models.density_model import DensityModel
 
 
 class ChainConfidenceScorer(nn.Module):
