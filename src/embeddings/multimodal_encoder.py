@@ -296,7 +296,7 @@ class AudioEncoder(nn.Module):
         Returns:
             Audio embeddings
         """
-        if isinstance(audio_data, np.ndarray):
+        if isinstance(audio_data, np.ndarray) or isinstance(audio_data, torch.tensor):
             audio_data = [audio_data]
             return_single = True
         else:
@@ -308,6 +308,8 @@ class AudioEncoder(nn.Module):
 
         if self.use_clap:
             # CLAP encoding
+            if isinstance(audio_data[0], np.ndarray):
+                audio_data = [torch.from_numpy(x) for x in audio_data]
             audio_features = self.model.get_audio_embedding_from_data(
                 x=audio_data,
                 use_tensor=True
