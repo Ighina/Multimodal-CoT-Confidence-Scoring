@@ -296,7 +296,7 @@ class AudioEncoder(nn.Module):
         Returns:
             Audio embeddings
         """
-        if isinstance(audio_data, np.ndarray) or isinstance(audio_data, torch.tensor):
+        if isinstance(audio_data, np.ndarray) or isinstance(audio_data, torch.Tensor):
             audio_data = [audio_data]
             return_single = True
         else:
