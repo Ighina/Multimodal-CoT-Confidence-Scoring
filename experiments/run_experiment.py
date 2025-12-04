@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.data import UNOBenchLoader, CoTGenerator, DataProcessor, CoTDataset
+from src.dataset import UNOBenchLoader, CoTGenerator, DataProcessor, CoTDataset
 from src.embeddings import TextEncoder, MultimodalEncoder, EmbeddingCache
 from src.coherence import (
     InternalCoherenceMetric,

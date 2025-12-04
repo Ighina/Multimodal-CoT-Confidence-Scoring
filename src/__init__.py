@@ -8,7 +8,7 @@ by measuring internal textual coherence and cross-modal alignment.
 __version__ = "0.1.0"
 __author__ = "Research Team"
 
-from .data import *
+from .dataset import *
 from .embeddings import *
 from .coherence import *
 from .models import *
