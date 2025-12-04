@@ -67,16 +67,20 @@ class CrossModalCoherenceMetric(nn.Module):
 
         # Compute similarity matrix: (num_steps, num_modals)
         similarities = []
-        for step_emb in step_embeddings:
-            step_sims = []
+        if self.similarity_metric == "clap":
             for modal_emb in modal_embeddings:
-                sim = compute_similarity(
-                    step_emb,
-                    modal_emb,
-                    metric=self.similarity_metric
-                )
-                step_sims.append(sim)
-            similarities.append(torch.stack(step_sims))
+                similarities.append(torch.matmul(modal_emb, step_embeddings.T))
+        else:
+            for step_emb in step_embeddings:
+                step_sims = []
+                for modal_emb in modal_embeddings:
+                    sim = compute_similarity(
+                            step_emb,
+                            modal_emb,
+                            metric=self.similarity_metric
+                        )
+                    step_sims.append(sim)
+                similarities.append(torch.stack(step_sims))
 
         similarity_matrix = torch.stack(similarities)  # (num_steps, num_modals)
 
