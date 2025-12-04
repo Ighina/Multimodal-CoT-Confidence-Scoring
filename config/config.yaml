@@ -1,0 +1,122 @@
+# Main configuration file for Multimodal CoT Confidence Scoring
+
+# Data configuration
+data:
+  benchmark: "uno_bench"  # Options: uno_bench, mmmu, scienceqa
+  data_path: "./data"
+  cache_dir: "./cache"
+  num_samples: -1  # -1 for all samples
+  split: "test"
+
+# Model configuration
+model:
+  # Base LVLM for CoT generation
+  lvlm:
+    name: "llava-v1.6-7b"  # or "gpt-4-vision", "qwen-vl"
+    device: "cuda"
+    batch_size: 4
+
+  # Embedding models
+  text_encoder:
+    name: "sentence-transformers/all-mpnet-base-v2"
+    embedding_dim: 768
+
+  multimodal_encoder:
+    name: "openai/clip-vit-large-patch14"
+    embedding_dim: 768
+
+  # Confidence head
+  confidence_head:
+    hidden_dims: [512, 256, 128]
+    dropout: 0.3
+    activation: "relu"
+
+# CoT generation
+cot_generation:
+  num_chains_per_sample: 5  # For variance analysis
+  temperature: 0.7
+  top_p: 0.9
+  max_new_tokens: 512
+  cot_prompt_template: |
+    Question: {question}
+    Please solve this step by step, showing your reasoning process.
+
+# Coherence computation
+coherence:
+  # Internal coherence
+  internal:
+    similarity_metric: "cosine"  # cosine, euclidean, dot_product
+    aggregation: "mean"  # mean, min, hmm
+    goal_directedness_weight: 0.3
+    smoothness_weight: 0.7
+
+  # Cross-modal coherence
+  cross_modal:
+    similarity_metric: "cosine"
+    contrastive_margin: 0.2
+    num_negatives: 4  # Number of negative samples per batch
+    attention_weighted: true
+
+  # Chain-level confidence
+  chain_confidence:
+    internal_weight: 0.5
+    cross_modal_weight: 0.4
+    density_weight: 0.1
+    use_density_model: true
+    density_model_type: "kde"  # kde, gmm
+
+# Training configuration
+training:
+  batch_size: 32
+  num_epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "cosine"
+  warmup_steps: 100
+  validation_split: 0.2
+  early_stopping_patience: 10
+
+# Evaluation configuration
+evaluation:
+  metrics:
+    - "auc_roc"
+    - "auc_pr"
+    - "calibration_error"
+    - "ece"  # Expected Calibration Error
+    - "risk_coverage"
+  abstention_thresholds: [0.3, 0.5, 0.7, 0.9]
+  reranking: true
+
+# Baseline methods
+baselines:
+  - "cot_length"
+  - "log_probability"
+  - "majority_vote"
+  - "llm_judge"
+  - "semantic_entropy"
+
+# Ablation studies
+ablations:
+  - "internal_only"
+  - "cross_modal_only"
+  - "no_density"
+  - "clip_vs_lvlm_embeddings"
+
+# Logging and output
+logging:
+  log_dir: "./logs"
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: "multimodal-cot-confidence"
+  save_interval: 5
+
+output:
+  results_dir: "./results"
+  save_predictions: true
+  save_embeddings: false  # Can be large
+  visualize_results: true
+
+# Reproducibility
+seed: 42
+deterministic: true
