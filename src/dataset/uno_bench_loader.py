@@ -24,8 +24,10 @@ class UNOBenchSample:
     images: List[Image.Image]
     audio_paths: Optional[List[str]] = None  # Paths to audio files
     audio_data: Optional[List[np.ndarray]] = None  # Loaded audio waveforms
-    modality: str = 'omni-modal'  # 'uni-modal', 'omni-modal', 'audio', etc.
-    reasoning_type: str = 'unknown'  # e.g., 'logical', 'mathematical', 'spatial', 'auditory'
+    modality: str = "omni-modal"  # 'uni-modal', 'omni-modal', 'audio', etc.
+    reasoning_type: str = (
+        "unknown"  # e.g., 'logical', 'mathematical', 'spatial', 'auditory'
+    )
     metadata: Optional[Dict] = None
 
 
@@ -40,9 +42,9 @@ class UNOBenchLoader:
     def __init__(
         self,
         data_path: str,
-        split: str = "test",
+        split: str = "validation",
         modality_filter: Optional[str] = None,
-        cache_dir: Optional[str] = None
+        cache_dir: Optional[str] = None,
     ):
         """
         Initialize UNO-Bench loader.
@@ -70,39 +72,39 @@ class UNOBenchLoader:
                 "Please download the dataset from the official repository."
             )
 
-        with open(json_path, 'r', encoding='utf-8') as f:
+        with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         samples = []
         for item in data:
             # Apply modality filter
-            if self.modality_filter and item.get('modality') != self.modality_filter:
+            if self.modality_filter and item.get("modality") != self.modality_filter:
                 continue
 
             # Load images
             images = []
-            for img_path in item.get('image_paths', []):
+            for img_path in item.get("image_paths", []):
                 full_path = self.data_path / img_path
                 if full_path.exists():
-                    images.append(Image.open(full_path).convert('RGB'))
+                    images.append(Image.open(full_path).convert("RGB"))
 
             # Load audio paths (not loading audio data yet for efficiency)
             audio_paths = []
-            for audio_path in item.get('audio_paths', []):
+            for audio_path in item.get("audio_paths", []):
                 full_path = self.data_path / audio_path
                 if full_path.exists():
                     audio_paths.append(str(full_path))
 
             sample = UNOBenchSample(
-                id=item['id'],
-                question=item['question'],
-                answer=item['answer'],
+                id=item["id"],
+                question=item["question"],
+                answer=item["answer"],
                 images=images,
                 audio_paths=audio_paths if audio_paths else None,
                 audio_data=None,  # Lazy loading - load when needed
-                modality=item.get('modality', 'omni-modal'),
-                reasoning_type=item.get('reasoning_type', 'unknown'),
-                metadata=item.get('metadata', {})
+                modality=item.get("modality", "omni-modal"),
+                reasoning_type=item.get("reasoning_type", "unknown"),
+                metadata=item.get("metadata", {}),
             )
             samples.append(sample)
 
@@ -121,23 +123,25 @@ class UNOBenchLoader:
     def get_statistics(self) -> Dict:
         """Get dataset statistics."""
         stats = {
-            'total_samples': len(self.samples),
-            'modality_distribution': {},
-            'reasoning_type_distribution': {},
-            'images_per_sample': []
+            "total_samples": len(self.samples),
+            "modality_distribution": {},
+            "reasoning_type_distribution": {},
+            "images_per_sample": [],
         }
 
         for sample in self.samples:
             # Modality distribution
-            stats['modality_distribution'][sample.modality] = \
-                stats['modality_distribution'].get(sample.modality, 0) + 1
+            stats["modality_distribution"][sample.modality] = (
+                stats["modality_distribution"].get(sample.modality, 0) + 1
+            )
 
             # Reasoning type distribution
-            stats['reasoning_type_distribution'][sample.reasoning_type] = \
-                stats['reasoning_type_distribution'].get(sample.reasoning_type, 0) + 1
+            stats["reasoning_type_distribution"][sample.reasoning_type] = (
+                stats["reasoning_type_distribution"].get(sample.reasoning_type, 0) + 1
+            )
 
             # Images per sample
-            stats['images_per_sample'].append(len(sample.images))
+            stats["images_per_sample"].append(len(sample.images))
 
         return stats
 
@@ -145,11 +149,7 @@ class UNOBenchLoader:
 class UNOBenchDataset(Dataset):
     """PyTorch Dataset wrapper for UNO-Bench."""
 
-    def __init__(
-        self,
-        loader: UNOBenchLoader,
-        transform=None
-    ):
+    def __init__(self, loader: UNOBenchLoader, transform=None):
         """
         Initialize dataset.
 
@@ -172,11 +172,11 @@ class UNOBenchDataset(Dataset):
             images = [self.transform(img) for img in images]
 
         return {
-            'id': sample.id,
-            'question': sample.question,
-            'answer': sample.answer,
-            'images': images,
-            'modality': sample.modality,
-            'reasoning_type': sample.reasoning_type,
-            'metadata': sample.metadata
+            "id": sample.id,
+            "question": sample.question,
+            "answer": sample.answer,
+            "images": images,
+            "modality": sample.modality,
+            "reasoning_type": sample.reasoning_type,
+            "metadata": sample.metadata,
         }
