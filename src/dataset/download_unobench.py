@@ -5,7 +5,7 @@ import sys
 os.environ["HF_HUB_DISABLE_XET"] = "1"
 
 def download_dataset(hf_token, split="audio", max_workers=2, max_retries=5):
-  for retry in max_retries:
+  for retry in range(max_retries):
     try:
       snapshot_download(
           repo_id="meituan-longcat/UNO-Bench",
