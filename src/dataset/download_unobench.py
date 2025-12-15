@@ -11,7 +11,7 @@ def download_dataset(hf_token, split="audio", max_workers=2, max_retries=5):
           repo_id="meituan-longcat/UNO-Bench",
           repo_type="dataset",
           allow_patterns=f"{split}/**",
-          local_dir=f"uno-bench/{split}",
+          local_dir=f"uno-bench",
           local_dir_use_symlinks=False,
           token=hf_token,
           max_workers=max_workers
@@ -20,7 +20,7 @@ def download_dataset(hf_token, split="audio", max_workers=2, max_retries=5):
           repo_id="meituan-longcat/UNO-Bench",
           repo_type="dataset",
           allow_patterns="validation.parquet",
-          local_dir=f"uno-bench/validation.parquet",
+          local_dir=f"uno-bench",
           local_dir_use_symlinks=False,
           token=hf_token,
           max_workers=max_workers
