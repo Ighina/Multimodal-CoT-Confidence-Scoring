@@ -1,11 +1,14 @@
 import re
 import asyncio
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from dataclasses import dataclass
 from PIL import Image
 import torch
 from vllm import LLM, SamplingParams
 from vllm.inputs import TokensPrompt
+
+# Import multimodal model formatter
+from .multimodal_models import format_multimodal_prompt
 
 
 @dataclass
@@ -30,6 +33,7 @@ class CoTGenerator:
     def __init__(
         self,
         model_name: str = "llava-hf/llava-1.5-7b-hf",
+        model_type: Optional[str] = None,
         device: str = "cuda",
         cot_prompt_template: Optional[str] = None,
         batch_size: int = 32,
@@ -44,6 +48,8 @@ class CoTGenerator:
 
         Args:
             model_name: Name/path of the LVLM model
+            model_type: Model type identifier for multimodal formatting (e.g., "llava", "qwen2_audio")
+                       If None, will attempt to infer from model_name
             device: Device to run model on
             cot_prompt_template: Template for CoT prompting
             batch_size: Batch size for processing multiple requests
@@ -53,6 +59,7 @@ class CoTGenerator:
             tensor_parallel_size: Number of GPUs for tensor parallelism
         """
         self.model_name = model_name
+        self.model_type = model_type or self._infer_model_type(model_name)
         self.device = device
         self.batch_size = batch_size
         self.enable_prefix_caching = enable_prefix_caching
@@ -70,8 +77,84 @@ class CoTGenerator:
         self.llm = None
         self.tokenizer = None
 
-        if not self.lazy_model_loading:
+        if not lazy_model_loading:
             self._load_model()
+
+    def _infer_model_type(self, model_name: str) -> str:
+        """
+        Infer model type from model name/path.
+
+        Args:
+            model_name: Model name or path
+
+        Returns:
+            Inferred model type string
+        """
+        model_name_lower = model_name.lower()
+
+        # Common model type patterns
+        if "llava" in model_name_lower:
+            if "onevision" in model_name_lower:
+                return "llava-onevision"
+            elif "next" in model_name_lower:
+                if "video" in model_name_lower:
+                    return "llava-next-video"
+                return "llava-next"
+            return "llava"
+        elif "qwen2-audio" in model_name_lower or "qwen2_audio" in model_name_lower:
+            return "qwen2_audio"
+        elif "qwen2.5-omni" in model_name_lower or "qwen2_5_omni" in model_name_lower:
+            return "qwen2_5_omni"
+        elif "qwen2-vl" in model_name_lower or "qwen2_vl" in model_name_lower:
+            return "qwen2_vl"
+        elif "qwen2.5-vl" in model_name_lower or "qwen2_5_vl" in model_name_lower:
+            return "qwen2_5_vl"
+        elif "qwen3-vl" in model_name_lower or "qwen3_vl" in model_name_lower:
+            if "moe" in model_name_lower:
+                return "qwen3_vl_moe"
+            return "qwen3_vl"
+        elif "phi-4" in model_name_lower or "phi4" in model_name_lower:
+            if "multimodal" in model_name_lower:
+                return "phi4_multimodal"
+            return "phi4_mm"
+        elif "phi-3" in model_name_lower or "phi3" in model_name_lower:
+            return "phi3_v"
+        elif "gemma-3" in model_name_lower or "gemma3" in model_name_lower:
+            if "n" in model_name_lower:
+                return "gemma3n"
+            return "gemma3"
+        elif "internvl" in model_name_lower:
+            return "internvl_chat"
+        elif "minicpm" in model_name_lower:
+            if "o" in model_name_lower:
+                return "minicpmo"
+            return "minicpmv"
+        elif "molmo" in model_name_lower:
+            return "molmo"
+        elif "ultravox" in model_name_lower:
+            return "ultravox"
+        elif "whisper" in model_name_lower:
+            return "whisper"
+        elif "aria" in model_name_lower:
+            return "aria"
+        elif "glm-4v" in model_name_lower or "glm4v" in model_name_lower:
+            if "5" in model_name_lower:
+                if "fp8" in model_name_lower:
+                    return "glm4_5v_fp8"
+                return "glm4_5v"
+            elif "1" in model_name_lower:
+                return "glm4_1v"
+            return "glm4v"
+        elif "deepseek" in model_name_lower:
+            if "v2" in model_name_lower:
+                return "deepseek_vl_v2"
+            if "ocr" in model_name_lower:
+                return "deepseek_ocr"
+            return "deepseek_vl_v2"
+
+        # Default to llava if can't infer
+        print(f"Warning: Could not infer model type from '{model_name}', defaulting to 'llava'")
+        return "llava"
 
     def _load_model(self):
         """Lazy loading of VLLM model with optimizations."""
@@ -101,23 +184,101 @@ class CoTGenerator:
         self.tokenizer = self.llm.get_tokenizer()
         print(f"Model loaded successfully. Vocab size: {len(self.tokenizer)}")
 
-    def generate_cot_chains(
+    def generate_cot_from_sample(
         self,
-        question: str,
-        images: List[Image.Image],
+        sample,
         num_chains: int = 1,
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_new_tokens: int = 512,
         return_log_probs: bool = True,
     ) -> List[CoTChain]:
-        # TODO: Add audio to this and next function
         """
-        Generate multiple CoT chains for a single question and images.
+        Generate CoT chains from a UNOBenchSample.
+
+        This is a convenience method that extracts the question, images, and
+        audio paths from a UNOBenchSample and generates CoT chains.
+
+        Args:
+            sample: UNOBenchSample instance
+            num_chains: Number of chains to generate
+            temperature: Sampling temperature
+            top_p: Nucleus sampling parameter
+            max_new_tokens: Maximum tokens to generate
+            return_log_probs: Whether to return log probabilities
+
+        Returns:
+            List of CoTChain objects
+        """
+        return self.generate_cot_chains(
+            question=sample.question,
+            images=sample.images if sample.images else None,
+            audio_paths=sample.audio_paths if sample.audio_paths else None,
+            num_chains=num_chains,
+            temperature=temperature,
+            top_p=top_p,
+            max_new_tokens=max_new_tokens,
+            return_log_probs=return_log_probs,
+        )
+
+    def generate_cot_from_samples_batch(
+        self,
+        samples: List,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_new_tokens: int = 512,
+        return_log_probs: bool = True,
+        use_tqdm: bool = True,
+    ) -> List[CoTChain]:
+        """
+        Generate CoT chains from multiple UNOBenchSamples in optimized batches.
+
+        This is the most efficient way to process multiple UNO-Bench samples.
+
+        Args:
+            samples: List of UNOBenchSample instances
+            temperature: Sampling temperature
+            top_p: Nucleus sampling parameter
+            max_new_tokens: Maximum tokens to generate
+            return_log_probs: Whether to return log probabilities
+            use_tqdm: Show progress bar
+
+        Returns:
+            List of CoTChain objects (one per sample)
+        """
+        questions = [s.question for s in samples]
+        images_list = [s.images if s.images else None for s in samples]
+        audio_list = [s.audio_paths if s.audio_paths else None for s in samples]
+
+        return self.generate_cot_chains_batch(
+            questions=questions,
+            images_list=images_list,
+            audio_list=audio_list,
+            temperature=temperature,
+            top_p=top_p,
+            max_new_tokens=max_new_tokens,
+            return_log_probs=return_log_probs,
+            use_tqdm=use_tqdm,
+        )
+
+    def generate_cot_chains(
+        self,
+        question: str,
+        images: Optional[List[Union[Image.Image, str]]] = None,
+        audio_paths: Optional[List[str]] = None,
+        num_chains: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_new_tokens: int = 512,
+        return_log_probs: bool = True,
+    ) -> List[CoTChain]:
+        """
+        Generate multiple CoT chains for a single question with multimodal inputs.
 
         Args:
             question: Input question
-            images: List of input images
+            images: List of input images (PIL Images or paths)
+            audio_paths: List of audio file paths
             num_chains: Number of chains to generate
             temperature: Sampling temperature
             top_p: Nucleus sampling parameter
@@ -131,6 +292,7 @@ class CoTGenerator:
         return self.generate_cot_chains_batch(
             questions=[question] * num_chains,
             images_list=[images] * num_chains,
+            audio_list=[audio_paths] * num_chains,
             temperature=temperature,
             top_p=top_p,
             max_new_tokens=max_new_tokens,
@@ -140,8 +302,8 @@ class CoTGenerator:
     def generate_cot_chains_batch(
         self,
         questions: List[str],
-        images_list: List[str],
-        audio_list: List[str],
+        images_list: Optional[List[Optional[List[Union[Image.Image, str]]]]] = None,
+        audio_list: Optional[List[Optional[List[str]]]] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_new_tokens: int = 512,
@@ -153,11 +315,12 @@ class CoTGenerator:
 
         This is the recommended method for processing multiple samples as it
         leverages VLLM's batching and prefix caching for maximum throughput.
+        Uses the unified multimodal_models interface for model-specific formatting.
 
         Args:
             questions: List of input questions
-            images_list: List of image paths (one per question)
-            audio_list: List of audio paths (one per question)
+            images_list: List of image lists (PIL Images or paths), one per question
+            audio_list: List of audio path lists, one per question
             temperature: Sampling temperature
             top_p: Nucleus sampling parameter
             max_new_tokens: Maximum tokens to generate
@@ -167,9 +330,11 @@ class CoTGenerator:
         Returns:
             List of CoTChain objects (one per question)
         """
-
-        # TODO: different models accept different type of processed multimodal data
-        # Create another file to handle multiple models and preprocess multimodal paths according to model type
+        # Ensure lists have same length
+        if images_list is None:
+            images_list = [None] * len(questions)
+        if audio_list is None:
+            audio_list = [None] * len(questions)
 
         # Prepare sampling parameters
         sampling_params = SamplingParams(
@@ -182,7 +347,8 @@ class CoTGenerator:
 
         # Format all prompts with the template
         prompts = [
-            self._format_prompt(q, imgs) for q, imgs in zip(questions, images_list)
+            self._format_prompt(q, imgs, audios)
+            for q, imgs, audios in zip(questions, images_list, audio_list)
         ]
 
         all_chains = []
@@ -215,7 +381,10 @@ class CoTGenerator:
             )
 
             # Process outputs
-            for output, question, images in zip(outputs, batch_questions, batch_images):
+            batch_audios = audio_list[start_idx:end_idx]
+            for output, question, images, audios in zip(
+                outputs, batch_questions, batch_images, batch_audios
+            ):
                 generated_text = output.outputs[0].text
 
                 # Extract log probabilities if requested
@@ -235,7 +404,8 @@ class CoTGenerator:
                     metadata={
                         "temperature": temperature,
                         "top_p": top_p,
-                        "num_images": len(images),
+                        "num_images": len(images) if images else 0,
+                        "num_audios": len(audios) if audios else 0,
                         "question": question,
                         "finish_reason": output.outputs[0].finish_reason,
                     },
@@ -247,55 +417,50 @@ class CoTGenerator:
     def _format_prompt(
         self,
         question: str,
-        images: List[Image.Image] = [],
-        audios: List[str] = [],
-        prompt_style: str = "llava",
-    ) -> str:
+        images: Optional[Union[List[Image.Image], List[str]]] = None,
+        audio_paths: Optional[List[str]] = None,
+    ) -> Union[str, Dict[str, Any]]:
         """
-        Format the prompt for the model.
+        Format the prompt for the model using model-specific formatting.
 
-        For vision-language models, you may need to include special tokens
-        or formatting. This is a basic text-only version.
+        This method uses the unified multimodal_models interface to format
+        prompts correctly for different model architectures.
 
         Args:
             question: The question to answer
-            images: Associated images (handling depends on model)
-            audios: Associated audios (handling depends on model)
-            prompt_style: Style of prompt (e.g., "llava")
+            images: Associated images (PIL Images or paths)
+            audio_paths: Associated audio file paths
 
         Returns:
-            Formatted prompt string
+            Formatted prompt (string or dict with prompt and multi_modal_data)
         """
-        # Basic text formatting with template
-        prompt = self.cot_prompt_template.format(question=question)
+        # Format question with CoT template
+        formatted_question = self.cot_prompt_template.format(question=question)
 
-        # For VLMs, you might need to add image tokens or special formatting
-        # Example for LLaVA-style models:
-        if images and not audios:
-            if prompt_style == "llava":
-                image_tokens = " ".join(["<image>"] * len(images))
-                prompt = f"{image_tokens}\n{prompt}"
+        # Use the unified multimodal formatter
+        try:
+            prompt_data = format_multimodal_prompt(
+                model_type=self.model_type,
+                question=formatted_question,
+                images=images if images else None,
+                audio_paths=audio_paths if audio_paths else None,
+                modality="auto"
+            )
 
-                prompt = {"prompt": prompt, "multi_modal_data": {"image": images}}
-        elif images:
-            if prompt_style == "llava":
-                image_tokens = " ".join(["<image>"] * len(images))
-                audio_tokens = " ".join(["<audio>"] * len(audios))
-                prompt = f"{image_tokens}\n{audio_tokens}\n{prompt}"
-
-                prompt = {
-                    "prompt": prompt,
-                    "multi_modal_data": {"image": images, "audio": audios},
+            # Return format expected by VLLM
+            if prompt_data.get("multi_modal_data"):
+                return {
+                    "prompt": prompt_data["prompt"],
+                    "multi_modal_data": prompt_data["multi_modal_data"]
                 }
-        elif audios:
-            if prompt_style == "llava":
-                # PLACEHOLDER: check audio-language model format
-                audio_tokens = " ".join(["<audio>"] * len(audios))
-                prompt = f"{audio_tokens}\n{prompt}"
+            else:
+                return prompt_data["prompt"]
 
-                prompt = {"prompt": prompt, "multi_modal_data": {"audio": audios}}
-
-        return prompt
+        except Exception as e:
+            print(f"Warning: Failed to format prompt with model-specific formatter: {e}")
+            print(f"Falling back to basic formatting for model type: {self.model_type}")
+            # Fallback to basic text prompt
+            return formatted_question
 
     def _create_chain(
         self,
@@ -373,8 +538,179 @@ class CoTGenerator:
         return {
             "status": "loaded",
             "model_name": self.model_name,
+            "model_type": self.model_type,
             "batch_size": self.batch_size,
             "prefix_caching_enabled": self.enable_prefix_caching,
             "gpu_memory_utilization": self.gpu_memory_utilization,
             "vocab_size": len(self.tokenizer) if self.tokenizer else None,
         }
+
+
+# ============================================================================
+# Usage Examples - Integration with UNO-Bench Loader and Multimodal Models
+# ============================================================================
+
+"""
+EXAMPLE 1: Basic usage with vision-language model (LLaVA)
+-----------------------------------------------------------
+
+from dataset.uno_bench_loader import UNOBenchLoader
+from dataset.cot_generator import CoTGenerator
+
+# Load UNO-Bench dataset
+loader = UNOBenchLoader(
+    data_path="path/to/uno_bench",
+    split="validation",
+    modality_filter="uni-modal"  # or "omni-modal" for multimodal
+)
+
+# Initialize CoT generator with LLaVA
+generator = CoTGenerator(
+    model_name="llava-hf/llava-1.5-7b-hf",
+    model_type="llava",  # Explicit model type
+    batch_size=8,
+    enable_prefix_caching=True
+)
+
+# Generate CoT for a single sample
+sample = loader[0]
+chains = generator.generate_cot_from_sample(
+    sample=sample,
+    num_chains=5,
+    temperature=0.7
+)
+
+for i, chain in enumerate(chains):
+    print(f"Chain {i+1}:")
+    print(f"  Steps: {len(chain.steps)}")
+    print(f"  Final answer: {chain.final_answer}")
+    print(f"  Metadata: {chain.metadata}")
+
+
+EXAMPLE 2: Batch processing with audio-language model (Qwen2-Audio)
+--------------------------------------------------------------------
+
+# Initialize generator with audio model
+generator = CoTGenerator(
+    model_name="Qwen/Qwen2-Audio-7B",
+    model_type="qwen2_audio",
+    batch_size=16
+)
+
+# Load omni-modal or audio samples
+loader = UNOBenchLoader(
+    data_path="path/to/uno_bench",
+    split="validation",
+    modality_filter="omni-modal"
+)
+
+# Process multiple samples in batch
+samples = loader.samples[:10]  # First 10 samples
+chains = generator.generate_cot_from_samples_batch(
+    samples=samples,
+    temperature=0.8,
+    max_new_tokens=512,
+    use_tqdm=True
+)
+
+# chains[i] corresponds to samples[i]
+for sample, chain in zip(samples, chains):
+    print(f"Question: {sample.question}")
+    print(f"Answer: {chain.final_answer}")
+    print(f"Modality: {sample.modality}")
+
+
+EXAMPLE 3: Using different models for different modalities
+-----------------------------------------------------------
+
+from dataset.multimodal_models import get_supported_models
+
+# See all supported models
+models = get_supported_models()
+print("Vision models:", models["vision_models"])
+print("Audio models:", models["audio_models"])
+print("Omni models:", models["omni_models"])
+
+# Process vision samples with Qwen2-VL
+vision_loader = UNOBenchLoader(
+    data_path="path/to/uno_bench",
+    split="validation",
+    modality_filter="uni-modal"
+)
+
+vision_generator = CoTGenerator(
+    model_name="Qwen/Qwen2-VL-7B-Instruct",
+    model_type="qwen2_vl"
+)
+
+vision_chains = vision_generator.generate_cot_from_samples_batch(
+    samples=vision_loader.samples
+)
+
+# Process omni-modal samples with Qwen2.5-Omni
+omni_loader = UNOBenchLoader(
+    data_path="path/to/uno_bench",
+    split="validation",
+    modality_filter="omni-modal"
+)
+
+omni_generator = CoTGenerator(
+    model_name="Qwen/Qwen2.5-Omni-7B",
+    model_type="qwen2_5_omni"
+)
+
+omni_chains = omni_generator.generate_cot_from_samples_batch(
+    samples=omni_loader.samples
+)
+
+
+EXAMPLE 4: Custom prompt template and advanced usage
+-----------------------------------------------------
+
+# Custom CoT prompt template
+custom_template = (
+    "Context: You are an expert reasoning assistant.\\n"
+    "Question: {question}\\n"
+    "Please provide a detailed step-by-step analysis:\\n"
+)
+
+generator = CoTGenerator(
+    model_name="llava-hf/llava-1.5-7b-hf",
+    model_type="llava",
+    cot_prompt_template=custom_template,
+    batch_size=4,
+    gpu_memory_utilization=0.85
+)
+
+# Manual data preparation (without UNOBenchLoader)
+from PIL import Image
+
+question = "What is the total count of objects in these images?"
+images = [Image.open("image1.jpg"), Image.open("image2.jpg")]
+audio_paths = None  # No audio for vision-only model
+
+chains = generator.generate_cot_chains(
+    question=question,
+    images=images,
+    audio_paths=audio_paths,
+    num_chains=3
+)
+
+
+EXAMPLE 5: Model type inference (automatic)
+--------------------------------------------
+
+# No need to specify model_type - it will be inferred from model_name
+generator = CoTGenerator(
+    model_name="llava-hf/llava-1.5-7b-hf",  # Will infer "llava"
+    # model_type is automatically set to "llava"
+)
+
+generator2 = CoTGenerator(
+    model_name="Qwen/Qwen2-Audio-7B",  # Will infer "qwen2_audio"
+)
+
+# Check inferred model type
+print(generator.model_type)  # Output: "llava"
+print(generator2.model_type)  # Output: "qwen2_audio"
+"""
