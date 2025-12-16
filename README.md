@@ -12,6 +12,13 @@ This framework implements a novel approach to confidence estimation for Large Vi
 
 ## Features
 
+- **🎯 Unified Multimodal CoT Generator** ⭐ NEW
+  - Support for 80+ vision and audio language models
+  - Seamless integration with UNO-Bench dataset
+  - Auto-detection of model types
+  - Batch processing with VLLM optimization
+  - See [**MULTIMODAL_COT_GENERATOR.md**](MULTIMODAL_COT_GENERATOR.md) for detailed usage
+
 - **Multi-level Coherence Analysis**
   - Local smoothness: semantic similarity between consecutive steps
   - Goal-directedness: progression toward the answer
@@ -22,6 +29,7 @@ This framework implements a novel approach to confidence estimation for Large Vi
   - Sentence Transformers for text
   - CLIP/OpenCLIP for multimodal alignment
   - Support for LVLM internal representations
+  - Audio embeddings (Wav2Vec2, CLAP)
 
 - **Density-based Anomaly Detection**
   - KDE (Kernel Density Estimation)
@@ -60,6 +68,40 @@ pip install -e .
 ```
 
 ## Quick Start
+
+### 0. Generating Chain-of-Thought from Multimodal Models (NEW!)
+
+Generate CoT reasoning from 80+ vision/audio language models with a unified interface:
+
+```python
+from src.dataset.uno_bench_loader import UNOBenchLoader
+from src.dataset.cot_generator import CoTGenerator
+
+# Load UNO-Bench dataset
+loader = UNOBenchLoader(
+    data_path="path/to/uno_bench",
+    split="validation"
+)
+
+# Initialize CoT generator (model type auto-inferred)
+generator = CoTGenerator(
+    model_name="llava-hf/llava-1.5-7b-hf",
+    batch_size=8
+)
+
+# Generate CoT for a single sample
+sample = loader[0]
+chains = generator.generate_cot_from_sample(sample, num_chains=5)
+
+# Or batch process multiple samples
+chains = generator.generate_cot_from_samples_batch(loader.samples[:10])
+
+for chain in chains:
+    print(f"Final Answer: {chain.final_answer}")
+    print(f"Reasoning Steps: {chain.steps}")
+```
+
+**📖 For comprehensive usage guide, model list, and advanced examples, see [MULTIMODAL_COT_GENERATOR.md](MULTIMODAL_COT_GENERATOR.md)**
 
 ### 1. Basic Usage
 
@@ -142,9 +184,10 @@ multimodal-cot-confidence/
 ├── config/
 │   └── config.yaml              # Main configuration
 ├── src/
-│   ├── data/
+│   ├── dataset/
 │   │   ├── uno_bench_loader.py  # UNO-Bench dataset loader
-│   │   ├── cot_generator.py     # CoT generation from LVLMs
+│   │   ├── cot_generator.py     # CoT generation from LVLMs (80+ models)
+│   │   ├── multimodal_models.py # Model-specific prompt formatters
 │   │   └── data_processor.py    # Data preprocessing
 │   ├── embeddings/
 │   │   ├── text_encoder.py      # Text embedding extraction
@@ -372,11 +415,18 @@ Contributions are welcome! Please:
 
 This project is licensed under the MIT License - see LICENSE file for details.
 
+## Documentation
+
+- **[MULTIMODAL_COT_GENERATOR.md](MULTIMODAL_COT_GENERATOR.md)** - Complete guide for using the multimodal CoT generator with 80+ models
+- **[AUDIO_INTEGRATION.md](AUDIO_INTEGRATION.md)** - Audio modality integration and usage guide
+- **[README.md](README.md)** - This file: project overview and main framework usage
+
 ## Acknowledgments
 
 This framework builds upon:
 
 - **UNO-Bench** for unified multimodal evaluation
+- **VLLM** for efficient LLM inference
 - **CLIP** for cross-modal embeddings
 - **Sentence Transformers** for text embeddings
 - **CMRF** and **MM-PEAR-CoT** for multimodal reasoning insights
@@ -392,6 +442,8 @@ For questions or issues, please:
 
 Future enhancements:
 
+- [x] Support for audio modality
+- [x] Integration with 80+ vision/audio language models via VLLM
 - [ ] Support for video modality
 - [ ] Online learning for confidence calibration
 - [ ] Integration with more LVLMs (Gemini, GPT-4V, etc.)
