@@ -2609,7 +2609,7 @@ def format_multimodal_prompt(
         multi_modal_data = {}
         if audio_paths:
             audio_data = [load_audio_files(audio_path) for audio_path in audio_paths]
-            multi_modal_data["audio"] = audio_paths
+            multi_modal_data["audio"] = audio_data
 
         return {
             "prompt": req_data.prompt,
