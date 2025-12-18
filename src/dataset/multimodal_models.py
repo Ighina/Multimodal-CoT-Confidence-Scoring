@@ -13,6 +13,7 @@ from dataclasses import asdict
 from typing import Any, NamedTuple
 
 from huggingface_hub import snapshot_download
+from librosa import load as load_audio_files
 from transformers import AutoTokenizer
 
 from vllm import LLM, EngineArgs, SamplingParams
@@ -42,6 +43,9 @@ class ModelRequestData(NamedTuple):
 # NOTE: The default `max_num_seqs` and `max_model_len` may result in OOM on
 # lower-end GPUs.
 # Unless specified, these settings have been tested to work on a single L4.
+
+# TODO: the qwen model require specific preprocessor modules to handle audio and images.
+# These modules are not yet integrated into vLLM. The current example only demonstrates text input.
 
 
 # AudioFlamingo3
@@ -2604,6 +2608,7 @@ def format_multimodal_prompt(
         # Build multi_modal_data
         multi_modal_data = {}
         if audio_paths:
+            audio_data = [load_audio_files(audio_path) for audio_path in audio_paths]
             multi_modal_data["audio"] = audio_paths
 
         return {
