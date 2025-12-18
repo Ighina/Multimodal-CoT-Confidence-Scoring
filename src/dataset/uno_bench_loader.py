@@ -1,17 +1,8 @@
-"""
-UNO-Bench data loader for multimodal reasoning tasks.
-"""
-
-import json
-import os
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
-
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import numpy as np
+import pandas as pd
 
 
 @dataclass
@@ -21,7 +12,8 @@ class UNOBenchSample:
     id: str
     question: str
     answer: str
-    images: List[Image.Image]
+    images: Optional[List[Image.Image]] = None  # PIL images
+    image_paths: Optional[List[str]] = None  # Paths to image files
     audio_paths: Optional[List[str]] = None  # Paths to audio files
     audio_data: Optional[List[np.ndarray]] = None  # Loaded audio waveforms
     modality: str = "omni-modal"  # 'uni-modal', 'omni-modal', 'audio', etc.
@@ -64,7 +56,7 @@ class UNOBenchLoader:
 
     def _load_samples(self) -> List[UNOBenchSample]:
         """Load samples from dataset."""
-        json_path = self.data_path / f"{self.split}.json"
+        json_path = self.data_path / f"{self.split}.parquet"
 
         if not json_path.exists():
             raise FileNotFoundError(
@@ -72,39 +64,54 @@ class UNOBenchLoader:
                 "Please download the dataset from the official repository."
             )
 
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = pd.read_parquet(json_path)
+
+        # Apply modality filter
+        if self.modality_filter:
+            data = data[data.subset_name == self.modality_filter]
+            assert len(
+                data
+            ), f"Modality filter {self.modality_filter} is not a valid subset name in UNOBench"
 
         samples = []
-        for item in data:
-            # Apply modality filter
-            if self.modality_filter and item.get("modality") != self.modality_filter:
-                continue
-
+        for idx in range(len(data)):
+            item = data.iloc[idx]
             # Load images
             images = []
-            for img_path in item.get("image_paths", []):
-                full_path = self.data_path / img_path
+            image_paths = []
+            for img_path in item.get("images", []):
+                if item["images"][img_path] is None:
+                    continue
+                full_path = self.data_path / item["images"][img_path]
+                image_paths.append(full_path)
                 if full_path.exists():
                     images.append(Image.open(full_path).convert("RGB"))
 
             # Load audio paths (not loading audio data yet for efficiency)
             audio_paths = []
-            for audio_path in item.get("audio_paths", []):
-                full_path = self.data_path / audio_path
+            for audio_path in item.get("audios", []):
+                if item["audios"][audio_path] is None:
+                    continue
+                full_path = self.data_path / item["audios"][audio_path]
                 if full_path.exists():
                     audio_paths.append(str(full_path))
 
             sample = UNOBenchSample(
-                id=item["id"],
+                id=item["qid"],
                 question=item["question"],
                 answer=item["answer"],
                 images=images,
+                image_paths=image_paths,
                 audio_paths=audio_paths if audio_paths else None,
                 audio_data=None,  # Lazy loading - load when needed
-                modality=item.get("modality", "omni-modal"),
-                reasoning_type=item.get("reasoning_type", "unknown"),
-                metadata=item.get("metadata", {}),
+                modality=item.get("subset_name", "omni-modal"),
+                reasoning_type=item.get("task", "unknown"),
+                metadata={
+                    "source": item.get("source", "unknown"),
+                    "score_type": item.get("score_type", "unknown"),
+                    "audio_types": item.get("audio_types", "unknown"),
+                    "ability": item.get("ability", "unknown"),
+                },
             )
             samples.append(sample)
 
@@ -175,7 +182,9 @@ class UNOBenchDataset(Dataset):
             "id": sample.id,
             "question": sample.question,
             "answer": sample.answer,
-            "images": images,
+            "image": images,
+            "image_paths": sample.image_paths,
+            "audio_paths": sample.audio_paths,
             "modality": sample.modality,
             "reasoning_type": sample.reasoning_type,
             "metadata": sample.metadata,
