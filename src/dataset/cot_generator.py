@@ -1,11 +1,8 @@
 import re
-import asyncio
 from typing import List, Optional, Dict, Any, Union
 from dataclasses import dataclass
 from PIL import Image
-import torch
 from vllm import LLM, SamplingParams
-from vllm.inputs import TokensPrompt
 
 # Import multimodal model formatter
 from .multimodal_models import format_multimodal_prompt
@@ -153,7 +150,9 @@ class CoTGenerator:
             return "deepseek_vl_v2"
 
         # Default to llava if can't infer
-        print(f"Warning: Could not infer model type from '{model_name}', defaulting to 'llava'")
+        print(
+            f"Warning: Could not infer model type from '{model_name}', defaulting to 'llava'"
+        )
         return "llava"
 
     def _load_model(self):
@@ -444,20 +443,22 @@ class CoTGenerator:
                 question=formatted_question,
                 images=images if images else None,
                 audio_paths=audio_paths if audio_paths else None,
-                modality="auto"
+                modality="auto",
             )
 
             # Return format expected by VLLM
             if prompt_data.get("multi_modal_data"):
                 return {
                     "prompt": prompt_data["prompt"],
-                    "multi_modal_data": prompt_data["multi_modal_data"]
+                    "multi_modal_data": prompt_data["multi_modal_data"],
                 }
             else:
                 return prompt_data["prompt"]
 
         except Exception as e:
-            print(f"Warning: Failed to format prompt with model-specific formatter: {e}")
+            print(
+                f"Warning: Failed to format prompt with model-specific formatter: {e}"
+            )
             print(f"Falling back to basic formatting for model type: {self.model_type}")
             # Fallback to basic text prompt
             return formatted_question
@@ -522,7 +523,7 @@ class CoTGenerator:
                 return match.group(1).strip()
 
         # If no pattern found, return last non-empty line
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
         return lines[-1] if lines else ""
 
     def update_batch_size(self, new_batch_size: int):
