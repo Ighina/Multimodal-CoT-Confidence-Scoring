@@ -66,8 +66,9 @@ class CoTGenerator:
 
         # Default CoT prompt template
         self.cot_prompt_template = cot_prompt_template or (
-            "Question: {question}\n"
-            "Let's solve this step by step, showing clear reasoning:\n"
+            "{question}\n"
+            "Let's solve this step by step, showing clear reasoning.\n"
+            "answer one of the following options: A, B, C, D.\n"
         )
 
         # Model will be loaded lazily
