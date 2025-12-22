@@ -10,6 +10,7 @@ on HuggingFace model repository.
 
 import os
 from dataclasses import asdict
+import re
 from typing import Any, NamedTuple
 
 from huggingface_hub import snapshot_download
@@ -2611,6 +2612,11 @@ def format_multimodal_prompt(
             audio_data = [load_audio_files(audio_path) for audio_path in audio_paths]
             multi_modal_data["audio"] = audio_data
 
+        req_data.prompt = re.sub(r"<audio_\d+>", "", req_data.prompt).strip()
+        req_data.prompt = re.sub(
+            r"following audio:", "provided audio", req_data.prompt
+        ).strip()
+
         return {
             "prompt": req_data.prompt,
             "prompt_token_ids": req_data.prompt_token_ids,
@@ -2630,6 +2636,11 @@ def format_multimodal_prompt(
         multi_modal_data = {}
         if images:
             multi_modal_data["image"] = images
+
+        req_data.prompt = re.sub(r"<image_\d+>", "", req_data.prompt).strip()
+        req_data.prompt = re.sub(
+            r"following image:", "provided image", req_data.prompt
+        ).strip()
 
         return {
             "prompt": req_data.prompt,
