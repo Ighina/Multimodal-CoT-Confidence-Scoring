@@ -4,35 +4,34 @@ import sys
 
 os.environ["HF_HUB_DISABLE_XET"] = "1"
 
-def download_dataset(hf_token, split="audio", max_workers=2, max_retries=5):
-  for retry in range(max_retries):
-    try:
-      snapshot_download(
-          repo_id="meituan-longcat/UNO-Bench",
-          repo_type="dataset",
-          allow_patterns=f"{split}/**",
-          local_dir=f"uno-bench",
-          local_dir_use_symlinks=False,
-          token=hf_token,
-          max_workers=max_workers
-      )
-      snapshot_download(
-          repo_id="meituan-longcat/UNO-Bench",
-          repo_type="dataset",
-          allow_patterns="validation.parquet",
-          local_dir=f"uno-bench",
-          local_dir_use_symlinks=False,
-          token=hf_token,
-          max_workers=max_workers
-      )
-      return
-    except Exception as e:
-      print(f"Error downloading dataset: {e}")
+
+def download_dataset(
+    hf_token, split="audio", max_workers=2, max_retries=5, local_dir="uno-bench"
+):
+    for retry in range(max_retries):
+        try:
+            snapshot_download(
+                repo_id="meituan-longcat/UNO-Bench",
+                repo_type="dataset",
+                allow_patterns=f"{split}/**",
+                local_dir=local_dir,
+                local_dir_use_symlinks=False,
+                token=hf_token,
+                max_workers=max_workers,
+            )
+            snapshot_download(
+                repo_id="meituan-longcat/UNO-Bench",
+                repo_type="dataset",
+                allow_patterns="validation.parquet",
+                local_dir=local_dir,
+                local_dir_use_symlinks=False,
+                token=hf_token,
+                max_workers=max_workers,
+            )
+            return
+        except Exception as e:
+            print(f"Error downloading dataset: {e}")
+
 
 if __name__ == "__main__":
-  download_dataset(
-  sys.argv[1],
-  sys.argv[2],
-  sys.argv[3],
-  sys.argv[4]
-  )
+    download_dataset(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
