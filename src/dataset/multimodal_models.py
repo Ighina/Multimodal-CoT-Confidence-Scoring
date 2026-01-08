@@ -2612,13 +2612,11 @@ def format_multimodal_prompt(
             audio_data = [load_audio_files(audio_path) for audio_path in audio_paths]
             multi_modal_data["audio"] = audio_data
 
-        req_data.prompt = re.sub(r"<audio_\d+>", "", req_data.prompt).strip()
-        req_data.prompt = re.sub(
-            r"following audio:", "provided audio", req_data.prompt
-        ).strip()
+        prompt = re.sub(r"<audio_\d+>", "", req_data.prompt).strip()
+        prompt = re.sub(r"following audio:", "provided audio", prompt).strip()
 
         return {
-            "prompt": req_data.prompt,
+            "prompt": prompt,
             "prompt_token_ids": req_data.prompt_token_ids,
             "multi_modal_data": multi_modal_data if multi_modal_data else None,
             "engine_args": req_data.engine_args,
@@ -2637,13 +2635,11 @@ def format_multimodal_prompt(
         if images:
             multi_modal_data["image"] = images
 
-        req_data.prompt = re.sub(r"<image_\d+>", "", req_data.prompt).strip()
-        req_data.prompt = re.sub(
-            r"following image:", "provided image", req_data.prompt
-        ).strip()
+        prompt = re.sub(r"<image_\d+>", "", req_data.prompt).strip()
+        prompt = re.sub(r"following image:", "provided image", prompt).strip()
 
         return {
-            "prompt": req_data.prompt,
+            "prompt": prompt,
             "prompt_token_ids": req_data.prompt_token_ids,
             "multi_modal_data": multi_modal_data if multi_modal_data else None,
             "engine_args": req_data.engine_args,
