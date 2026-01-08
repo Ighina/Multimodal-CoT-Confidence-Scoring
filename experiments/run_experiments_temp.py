@@ -11,6 +11,7 @@ from typing import Optional, List, Dict
 import logging
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.dataset.uno_bench_loader import UNOBenchLoader
@@ -19,7 +20,7 @@ from src.embeddings import TextEncoder, MultimodalEncoder, AudioEncoder
 from src.coherence import (
     InternalCoherenceMetric,
     CrossModalCoherenceMetric,
-    ChainConfidenceScorer
+    ChainConfidenceScorer,
 )
 from src.coherence_models import KDEDensityModel, GMMDensityModel
 
@@ -30,7 +31,7 @@ def setup_logger(log_file: Optional[str] = None) -> logging.Logger:
     logger.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
     # Console handler
@@ -50,11 +51,11 @@ def setup_logger(log_file: Optional[str] = None) -> logging.Logger:
 def convert_to_dict(chain):
     """Convert a CoTChain object to a dictionary."""
     return {
-        'metadata': chain.metadata,
-        'answer': chain.final_answer,
-        'content': chain.text,
-        'steps': chain.steps,
-        'log_probs': chain.log_probs
+        "metadata": chain.metadata,
+        "answer": chain.final_answer,
+        "content": chain.text,
+        "steps": chain.steps,
+        "log_probs": chain.log_probs,
     }
 
 
@@ -63,18 +64,14 @@ def setup_encoders(args, device: str, logger: logging.Logger):
     logger.info("Setting up encoders...")
 
     # Text encoder for CoT steps
-    text_encoder = TextEncoder(
-        model_name=args.text_encoder,
-        device=device
-    )
+    text_encoder = TextEncoder(model_name=args.text_encoder, device=device)
     logger.info(f"Text encoder loaded: {args.text_encoder}")
 
     # Multimodal encoder for images (if needed)
     multimodal_encoder = None
     if args.multimodal_encoder:
         multimodal_encoder = MultimodalEncoder(
-            model_name=args.multimodal_encoder,
-            device=device
+            model_name=args.multimodal_encoder, device=device
         )
         logger.info(f"Multimodal encoder loaded: {args.multimodal_encoder}")
 
@@ -83,9 +80,7 @@ def setup_encoders(args, device: str, logger: logging.Logger):
     if args.audio_encoder:
         use_clap = "clap" in args.audio_encoder.lower()
         audio_encoder = AudioEncoder(
-            model_name=args.audio_encoder,
-            device=device,
-            use_clap=use_clap
+            model_name=args.audio_encoder, device=device, use_clap=use_clap
         )
         logger.info(f"Audio encoder loaded: {args.audio_encoder}")
 
@@ -98,13 +93,13 @@ def setup_coherence_metrics(args):
         similarity_metric=args.similarity_metric,
         aggregation=args.aggregation,
         goal_directedness_weight=args.goal_directedness_weight,
-        smoothness_weight=args.smoothness_weight
+        smoothness_weight=args.smoothness_weight,
     )
 
     cross_modal_metric = CrossModalCoherenceMetric(
         similarity_metric=args.similarity_metric,
         contrastive_margin=args.contrastive_margin,
-        use_attention=args.use_attention
+        use_attention=args.use_attention,
     )
 
     return internal_metric, cross_modal_metric
@@ -114,9 +109,9 @@ def setup_confidence_scorer(args, internal_metric, cross_modal_metric):
     """Setup chain confidence scorer."""
     density_model = None
     if args.use_density_model:
-        if args.density_model_type == 'kde':
+        if args.density_model_type == "kde":
             density_model = KDEDensityModel()
-        elif args.density_model_type == 'gmm':
+        elif args.density_model_type == "gmm":
             density_model = GMMDensityModel()
 
     scorer = ChainConfidenceScorer(
@@ -125,7 +120,7 @@ def setup_confidence_scorer(args, internal_metric, cross_modal_metric):
         density_model=density_model,
         internal_weight=args.internal_weight,
         cross_modal_weight=args.cross_modal_weight,
-        density_weight=args.density_weight
+        density_weight=args.density_weight,
     )
 
     return scorer
@@ -138,7 +133,7 @@ def extract_embeddings(
     multimodal_encoder: Optional[MultimodalEncoder],
     audio_encoder: Optional[AudioEncoder],
     device: str,
-    logger: logging.Logger
+    logger: logging.Logger,
 ) -> List[List[Dict[str, torch.Tensor]]]:
     """
     Extract embeddings for all samples and chains.
@@ -156,8 +151,7 @@ def extract_embeddings(
         for chain in chains:
             # Extract step embeddings
             step_embeddings = text_encoder.encode_cot_steps(
-                chain.steps,
-                question=sample.question
+                chain.steps, question=sample.question
             )
 
             # Extract modality-specific embeddings
@@ -174,20 +168,25 @@ def extract_embeddings(
                         sample.audio_paths
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to encode audio for sample {sample.id}: {e}")
+                    logger.warning(
+                        f"Failed to encode audio for sample {sample.id}: {e}"
+                    )
                     # Fall back to zero embeddings
                     if modal_embeddings is None:
                         modal_embeddings = torch.zeros(
-                            audio_encoder.get_embedding_dim() if audio_encoder
+                            audio_encoder.get_embedding_dim()
+                            if audio_encoder
                             else multimodal_encoder.get_embedding_dim()
                         ).to(device)
 
             # If no modality data, use zero embeddings
             if modal_embeddings is None:
                 embedding_dim = (
-                    multimodal_encoder.get_embedding_dim() if multimodal_encoder
-                    else audio_encoder.get_embedding_dim() if audio_encoder
-                    else 512  # Default fallback
+                    multimodal_encoder.get_embedding_dim()
+                    if multimodal_encoder
+                    else (
+                        audio_encoder.get_embedding_dim() if audio_encoder else 512
+                    )  # Default fallback
                 )
                 modal_embeddings = torch.zeros(embedding_dim).to(device)
 
@@ -196,11 +195,11 @@ def extract_embeddings(
             answer_embedding = text_encoder(chain.final_answer)
 
             chain_embedding_data = {
-                'step_embeddings': step_embeddings,
-                'modal_embeddings': modal_embeddings,  # Generic name for image/audio
-                'question_embedding': question_embedding,
-                'answer_embedding': answer_embedding,
-                'modality_type': sample.modality  # Track which modality this is
+                "step_embeddings": step_embeddings,
+                "modal_embeddings": modal_embeddings,  # Generic name for image/audio
+                "question_embedding": question_embedding,
+                "answer_embedding": answer_embedding,
+                "modality_type": sample.modality,  # Track which modality this is
             }
 
             sample_embeddings.append(chain_embedding_data)
@@ -214,7 +213,7 @@ def extract_embeddings(
 def compute_coherence_scores(
     embeddings: List[List[Dict[str, torch.Tensor]]],
     confidence_scorer: ChainConfidenceScorer,
-    logger: logging.Logger
+    logger: logging.Logger,
 ) -> List[List[Dict[str, float]]]:
     """Compute coherence scores for all samples and chains."""
     logger.info("Computing coherence scores...")
@@ -229,10 +228,10 @@ def compute_coherence_scores(
         for chain_emb in sample_embeddings:
             # Compute scores using the confidence scorer
             scores = confidence_scorer(
-                step_embeddings=chain_emb['step_embeddings'],
-                modal_embeddings=chain_emb['modal_embeddings'],
-                question_embedding=chain_emb['question_embedding'],
-                answer_embedding=chain_emb['answer_embedding']
+                step_embeddings=chain_emb["step_embeddings"],
+                modal_embeddings=chain_emb["modal_embeddings"],
+                question_embedding=chain_emb["question_embedding"],
+                answer_embedding=chain_emb["answer_embedding"],
             )
 
             # Convert tensors to floats for JSON serialization
@@ -266,7 +265,7 @@ def save_results(
     save_cots: Optional[str] = None,
     save_embeddings: Optional[str] = None,
     save_scores: Optional[str] = None,
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,
 ):
     """Save results to specified paths."""
     if cots and save_cots:
@@ -274,7 +273,7 @@ def save_results(
             json.dump(
                 [[convert_to_dict(chain) for chain in chains] for chains in cots],
                 f,
-                indent=2
+                indent=2,
             )
         if logger:
             logger.info(f"Saved CoTs to {save_cots}")
@@ -311,227 +310,211 @@ def main():
 
     # Dataset arguments
     parser.add_argument(
-        '--data_path',
-        type=str,
-        default='uno-bench',
-        help='Path to UNO-Bench dataset'
+        "--data_path", type=str, default="uno-bench", help="Path to UNO-Bench dataset"
     )
     parser.add_argument(
-        '--split',
+        "--split",
         type=str,
-        default='validation',
-        choices=['train', 'validation', 'test'],
-        help='Dataset split to use'
+        default="validation",
+        choices=["train", "validation", "test"],
+        help="Dataset split to use",
     )
     parser.add_argument(
-        '--modality_filter',
+        "--modality_filter",
         type=str,
         default=None,
-        help='Filter by modality (e.g., "UNOBench-Audio", "UNOBench-Image", None for all)'
+        help='Filter by modality (e.g., "UNOBench-Audio", "UNOBench-Image", None for all)',
     )
     parser.add_argument(
-        '--max_samples',
+        "--max_samples",
         type=int,
         default=None,
-        help='Maximum number of samples to process (None for all)'
+        help="Maximum number of samples to process (None for all)",
     )
 
     # CoT generation arguments
     parser.add_argument(
-        '--cot_model_name',
+        "--cot_model_name",
         type=str,
-        default='Qwen/Qwen2-Audio-7B-Instruct',
-        help='Model name for CoT generation'
+        default="Qwen/Qwen2-Audio-7B-Instruct",
+        help="Model name for CoT generation",
     )
     parser.add_argument(
-        '--cot_model_type',
+        "--cot_model_type",
         type=str,
-        default='qwen2_audio',
-        help='Model type for CoT generation'
+        default="qwen2_audio",
+        help="Model type for CoT generation",
     )
     parser.add_argument(
-        '--num_chains',
+        "--num_chains",
         type=int,
         default=20,
-        help='Number of CoT chains to generate per sample'
+        help="Number of CoT chains to generate per sample",
     )
     parser.add_argument(
-        '--num_chains_for_scoring',
+        "--num_chains_for_scoring",
         type=int,
         default=None,
-        help='Number of chains to use for scoring (subset of generated/loaded chains). '
-             'If None, uses all chains. Useful for iterating experiments with different chain counts.'
+        help="Number of chains to use for scoring (subset of generated/loaded chains). "
+        "If None, uses all chains. Useful for iterating experiments with different chain counts.",
     )
     parser.add_argument(
-        '--max_new_tokens',
+        "--max_new_tokens",
         type=int,
         default=None,
-        help='Maximum number of new tokens for CoT generation'
+        help="Maximum number of new tokens for CoT generation",
     )
 
     # Encoder arguments
     parser.add_argument(
-        '--text_encoder',
+        "--text_encoder",
         type=str,
-        default='sentence-transformers/all-mpnet-base-v2',
-        help='Text encoder model for CoT steps'
+        default="sentence-transformers/all-mpnet-base-v2",
+        help="Text encoder model for CoT steps",
     )
     parser.add_argument(
-        '--multimodal_encoder',
+        "--multimodal_encoder",
         type=str,
         default=None,
-        help='Multimodal encoder for images (e.g., "openai/clip-vit-large-patch14")'
+        help='Multimodal encoder for images (e.g., "openai/clip-vit-large-patch14")',
     )
     parser.add_argument(
-        '--audio_encoder',
+        "--audio_encoder",
         type=str,
         default=None,
-        help='Audio encoder model (e.g., "facebook/wav2vec2-base-960h" or CLAP model)'
+        help='Audio encoder model (e.g., "facebook/wav2vec2-base-960h" or CLAP model)',
     )
 
     # Coherence metric arguments
     parser.add_argument(
-        '--similarity_metric',
+        "--similarity_metric",
         type=str,
-        default='cosine',
-        choices=['cosine', 'euclidean', 'dot'],
-        help='Similarity metric for coherence computation'
+        default="cosine",
+        choices=["cosine", "euclidean", "dot"],
+        help="Similarity metric for coherence computation",
     )
     parser.add_argument(
-        '--aggregation',
+        "--aggregation",
         type=str,
-        default='mean',
-        choices=['mean', 'min', 'max'],
-        help='Aggregation method for internal coherence'
+        default="mean",
+        choices=["mean", "min", "max"],
+        help="Aggregation method for internal coherence",
     )
     parser.add_argument(
-        '--goal_directedness_weight',
+        "--goal_directedness_weight",
         type=float,
         default=0.6,
-        help='Weight for goal directedness in internal coherence'
+        help="Weight for goal directedness in internal coherence",
     )
     parser.add_argument(
-        '--smoothness_weight',
+        "--smoothness_weight",
         type=float,
         default=0.4,
-        help='Weight for step smoothness in internal coherence'
+        help="Weight for step smoothness in internal coherence",
     )
     parser.add_argument(
-        '--contrastive_margin',
+        "--contrastive_margin",
         type=float,
         default=0.2,
-        help='Margin for contrastive loss in cross-modal coherence'
+        help="Margin for contrastive loss in cross-modal coherence",
     )
     parser.add_argument(
-        '--use_attention',
-        action='store_true',
-        help='Use attention weighting in cross-modal coherence'
+        "--use_attention",
+        action="store_true",
+        help="Use attention weighting in cross-modal coherence",
     )
 
     # Confidence scoring arguments
     parser.add_argument(
-        '--use_density_model',
-        action='store_true',
-        help='Use density model for confidence scoring'
+        "--use_density_model",
+        action="store_true",
+        help="Use density model for confidence scoring",
     )
     parser.add_argument(
-        '--density_model_type',
+        "--density_model_type",
         type=str,
-        default='kde',
-        choices=['kde', 'gmm'],
-        help='Type of density model to use'
+        default="kde",
+        choices=["kde", "gmm"],
+        help="Type of density model to use",
     )
     parser.add_argument(
-        '--internal_weight',
+        "--internal_weight",
         type=float,
         default=0.4,
-        help='Weight for internal coherence in confidence score'
+        help="Weight for internal coherence in confidence score",
     )
     parser.add_argument(
-        '--cross_modal_weight',
+        "--cross_modal_weight",
         type=float,
         default=0.4,
-        help='Weight for cross-modal coherence in confidence score'
+        help="Weight for cross-modal coherence in confidence score",
     )
     parser.add_argument(
-        '--density_weight',
+        "--density_weight",
         type=float,
         default=0.2,
-        help='Weight for density score in confidence score'
+        help="Weight for density score in confidence score",
     )
 
     # Save arguments
     parser.add_argument(
-        '--save_cots',
+        "--save_cots",
         type=str,
         default=None,
-        help='Path to save generated CoTs (JSON format)'
+        help="Path to save generated CoTs (JSON format)",
     )
     parser.add_argument(
-        '--save_embeddings',
+        "--save_embeddings",
         type=str,
         default=None,
-        help='Path to save embeddings (JSON format)'
+        help="Path to save embeddings (JSON format)",
     )
     parser.add_argument(
-        '--save_scores',
+        "--save_scores",
         type=str,
         default=None,
-        help='Path to save coherence scores (JSON format)'
+        help="Path to save coherence scores (JSON format)",
     )
-    parser.add_argument(
-        '--log_file',
-        type=str,
-        default=None,
-        help='Path to log file'
-    )
+    parser.add_argument("--log_file", type=str, default=None, help="Path to log file")
 
     # General arguments
     parser.add_argument(
-        '--device',
-        type=str,
-        default='cuda',
-        help='Device to use (cuda/cpu)'
+        "--device", type=str, default="cuda", help="Device to use (cuda/cpu)"
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--skip_cot_generation",
+        action="store_true",
+        help="Skip CoT generation (load from file instead)",
     )
     parser.add_argument(
-        '--seed',
-        type=int,
-        default=42,
-        help='Random seed'
-    )
-    parser.add_argument(
-        '--skip_cot_generation',
-        action='store_true',
-        help='Skip CoT generation (load from file instead)'
-    )
-    parser.add_argument(
-        '--load_cots',
+        "--load_cots",
         type=str,
         default=None,
-        help='Path to load pre-generated CoTs from'
+        help="Path to load pre-generated CoTs from",
     )
     parser.add_argument(
-        '--skip_embedding_extraction',
-        action='store_true',
-        help='Skip embedding extraction (load from file instead)'
+        "--skip_embedding_extraction",
+        action="store_true",
+        help="Skip embedding extraction (load from file instead)",
     )
     parser.add_argument(
-        '--load_embeddings',
+        "--load_embeddings",
         type=str,
         default=None,
-        help='Path to load pre-computed embeddings from'
+        help="Path to load pre-computed embeddings from",
     )
 
     args = parser.parse_args()
 
     # Setup
-    device = args.device if torch.cuda.is_available() else 'cpu'
+    device = args.device if torch.cuda.is_available() else "cpu"
     torch.manual_seed(args.seed)
     logger = setup_logger(args.log_file)
 
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("Multimodal CoT Confidence Scoring Experiment")
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"Device: {device}")
     logger.info(f"Dataset: {args.data_path}")
     logger.info(f"Split: {args.split}")
@@ -540,15 +523,13 @@ def main():
     # Load dataset
     logger.info("Loading UNO-Bench dataset...")
     unobench = UNOBenchLoader(
-        data_path=args.data_path,
-        split=args.split,
-        modality_filter=args.modality_filter
+        data_path=args.data_path, split=args.split, modality_filter=args.modality_filter
     )
 
     # Limit samples if specified
     samples = list(unobench)
     if args.max_samples:
-        samples = samples[:args.max_samples]
+        samples = samples[: args.max_samples]
     logger.info(f"Loaded {len(samples)} samples")
 
     # Log dataset statistics
@@ -560,33 +541,32 @@ def main():
     if not args.skip_cot_generation:
         logger.info("Generating CoT chains...")
         generator = CoTGenerator(
-            model_name=args.cot_model_name,
-            model_type=args.cot_model_type
+            model_name=args.cot_model_name, model_type=args.cot_model_type
         )
 
         cots = []
         for idx, sample in enumerate(samples):
             logger.info(f"Generating CoTs for sample {idx + 1}/{len(samples)}")
             chains = generator.generate_cot_from_sample(
-                sample,
-                max_new_tokens=args.max_new_tokens,
-                num_chains=args.num_chains
+                sample, max_new_tokens=args.max_new_tokens, num_chains=args.num_chains
             )
             cots.append(chains)
     elif args.load_cots:
         logger.info(f"Loading CoTs from {args.load_cots}...")
-        with open(args.load_cots, 'r') as f:
-            cots_data = json.load(f)
+        with open(args.load_cots, "r") as f:
+            cots = json.load(f)
         # Note: You may need to reconstruct CoTChain objects from loaded data
-        logger.info(f"Loaded {len(cots_data)} sample CoTs")
+        logger.info(f"Loaded {len(cots)} sample CoTs")
     else:
         logger.error("Must either generate CoTs or provide --load_cots path")
         return
 
     # Limit number of chains for scoring if specified
     if args.num_chains_for_scoring is not None and cots is not None:
-        logger.info(f"Limiting to {args.num_chains_for_scoring} chains per sample for scoring")
-        cots = [chains[:args.num_chains_for_scoring] for chains in cots]
+        logger.info(
+            f"Limiting to {args.num_chains_for_scoring} chains per sample for scoring"
+        )
+        cots = [chains[: args.num_chains_for_scoring] for chains in cots]
         logger.info(f"Using {len(cots[0])} chains per sample")
 
     # Extract or load embeddings
@@ -605,11 +585,11 @@ def main():
             multimodal_encoder=multimodal_encoder,
             audio_encoder=audio_encoder,
             device=device,
-            logger=logger
+            logger=logger,
         )
     elif args.load_embeddings:
         logger.info(f"Loading embeddings from {args.load_embeddings}...")
-        with open(args.load_embeddings, 'r') as f:
+        with open(args.load_embeddings, "r") as f:
             embeddings_data = json.load(f)
 
         # Convert loaded data back to tensors
@@ -628,8 +608,12 @@ def main():
 
         # Limit embeddings if num_chains_for_scoring is specified
         if args.num_chains_for_scoring is not None:
-            logger.info(f"Limiting embeddings to {args.num_chains_for_scoring} chains per sample")
-            embeddings = [sample_embs[:args.num_chains_for_scoring] for sample_embs in embeddings]
+            logger.info(
+                f"Limiting embeddings to {args.num_chains_for_scoring} chains per sample"
+            )
+            embeddings = [
+                sample_embs[: args.num_chains_for_scoring] for sample_embs in embeddings
+            ]
     else:
         logger.error("Must either extract embeddings or provide --load_embeddings path")
         return
@@ -643,9 +627,7 @@ def main():
 
     # Compute coherence scores
     scores = compute_coherence_scores(
-        embeddings=embeddings,
-        confidence_scorer=confidence_scorer,
-        logger=logger
+        embeddings=embeddings, confidence_scorer=confidence_scorer, logger=logger
     )
 
     # Save results
@@ -657,13 +639,13 @@ def main():
         save_cots=args.save_cots,
         save_embeddings=args.save_embeddings,
         save_scores=args.save_scores,
-        logger=logger
+        logger=logger,
     )
 
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("Experiment complete!")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
