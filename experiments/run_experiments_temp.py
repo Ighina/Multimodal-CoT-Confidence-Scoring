@@ -410,7 +410,7 @@ def process_sample_sequential(
                 if obj.numel() == 1:
                     return obj.item()
                 else:
-                    return obj.cpu().numpy().tolist()
+                    return obj.detach().cpu().numpy().tolist()
             elif isinstance(obj, dict):
                 return {k: convert_scores(v) for k, v in obj.items()}
             elif isinstance(obj, list):
@@ -559,7 +559,7 @@ def save_results(
                 for chain_emb in sample_embs:
                     chain_dict = {
                         k: (
-                            v.cpu().numpy().tolist()
+                            v.detach().cpu().numpy().tolist()
                             if isinstance(v, torch.Tensor)
                             else v
                         )
@@ -582,7 +582,7 @@ def save_results(
                 for chain_emb in sample_embs:
                     chain_dict = {
                         k: (
-                            v.cpu().numpy().tolist()
+                            v.detach().cpu().numpy().tolist()
                             if isinstance(v, torch.Tensor)
                             else v
                         )
