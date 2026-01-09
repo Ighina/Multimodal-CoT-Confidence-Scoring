@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.dataset.uno_bench_loader import UNOBenchLoader
-from src.dataset.cot_generator import CoTGenerator
+from src.dataset.cot_generator import CoTGenerator, CoTChain
 from src.embeddings import TextEncoder, MultimodalEncoder, AudioEncoder
 from src.coherence import (
     InternalCoherenceMetric,
@@ -52,8 +52,8 @@ def convert_to_dict(chain):
     """Convert a CoTChain object to a dictionary."""
     return {
         "metadata": chain.metadata,
-        "answer": chain.final_answer,
-        "content": chain.text,
+        "final_answer": chain.final_answer,
+        "text": chain.text,
         "steps": chain.steps,
         "log_probs": chain.log_probs,
     }
@@ -64,7 +64,11 @@ def setup_encoders(args, device: str, logger: logging.Logger):
     logger.info("Setting up encoders...")
 
     # Text encoder for CoT steps
-    text_encoder = TextEncoder(model_name=args.text_encoder, device=device)
+
+    if args.audio_encoder.lower().find("clap") != -1:
+        args.text_encoder = "clap"
+    else:
+        text_encoder = TextEncoder(model_name=args.text_encoder, device=device)
     logger.info(f"Text encoder loaded: {args.text_encoder}")
 
     # Multimodal encoder for images (if needed)
@@ -83,6 +87,8 @@ def setup_encoders(args, device: str, logger: logging.Logger):
             model_name=args.audio_encoder, device=device, use_clap=use_clap
         )
         logger.info(f"Audio encoder loaded: {args.audio_encoder}")
+
+        text_encoder = "clap"
 
     return text_encoder, multimodal_encoder, audio_encoder
 
@@ -150,9 +156,10 @@ def extract_embeddings(
 
         for chain in chains:
             # Extract step embeddings
-            step_embeddings = text_encoder.encode_cot_steps(
-                chain.steps, question=sample.question
-            )
+            if text_encoder != "clap":
+                step_embeddings = text_encoder.encode_cot_steps(
+                    chain.steps, question=sample.question
+                )
 
             # Extract modality-specific embeddings
             modal_embeddings = None
@@ -164,6 +171,10 @@ def extract_embeddings(
             # Handle audio (takes precedence if both exist)
             if sample.audio_paths and audio_encoder:
                 try:
+                    if text_encoder == "clap":
+                        step_embeddings = audio_encoder.encode_text_for_audio_alignment(
+                            chain.steps
+                        )
                     modal_embeddings = audio_encoder.encode_audio_from_file(
                         sample.audio_paths
                     )
@@ -191,14 +202,22 @@ def extract_embeddings(
                 modal_embeddings = torch.zeros(embedding_dim).to(device)
 
             # Extract question and answer embeddings
-            question_embedding = text_encoder(sample.question)
-            answer_embedding = text_encoder(chain.final_answer)
+            if text_encoder == "clap":
+                question_embedding = audio_encoder.encode_text_for_audio_alignment(
+                    [sample.question]
+                )
+                answer_embedding = audio_encoder.encode_text_for_audio_alignment(
+                    [chain.final_answer]
+                )
+            else:
+                question_embedding = text_encoder(sample.question)
+                answer_embedding = text_encoder(chain.final_answer)
 
             chain_embedding_data = {
-                "step_embeddings": step_embeddings,
-                "modal_embeddings": modal_embeddings,  # Generic name for image/audio
-                "question_embedding": question_embedding,
-                "answer_embedding": answer_embedding,
+                "step_embeddings": step_embeddings.cpu(),
+                "modal_embeddings": modal_embeddings.cpu(),  # Generic name for image/audio
+                "question_embedding": question_embedding.cpu(),
+                "answer_embedding": answer_embedding.cpu(),
                 "modality_type": sample.modality,  # Track which modality this is
             }
 
@@ -258,6 +277,234 @@ def compute_coherence_scores(
     return all_scores
 
 
+def process_sample_sequential(
+    sample,
+    sample_idx: int,
+    cot_chains: List,
+    text_encoder,
+    multimodal_encoder: Optional[MultimodalEncoder],
+    audio_encoder: Optional[AudioEncoder],
+    confidence_scorer: ChainConfidenceScorer,
+    device: str,
+    save_embeddings_dir: Optional[Path] = None,
+    logger: Optional[logging.Logger] = None,
+) -> tuple[List[Dict[str, torch.Tensor]], List[Dict[str, float]]]:
+    """
+    Process a single sample: extract embeddings and compute coherence scores.
+    Optionally saves embeddings to a file and returns scores.
+
+    This function processes one sample at a time to minimize memory usage.
+    """
+    if logger and (sample_idx + 1) % 10 == 0:
+        logger.info(f"Processing sample {sample_idx + 1}")
+
+    # Extract embeddings for this sample
+    sample_embeddings = []
+
+    for chain in cot_chains:
+        # Extract step embeddings
+        if text_encoder != "clap":
+            step_embeddings = text_encoder.encode_cot_steps(
+                chain.steps, question=sample.question
+            )
+
+        # Extract modality-specific embeddings
+        modal_embeddings = None
+
+        # Handle images
+        if sample.images and multimodal_encoder:
+            modal_embeddings = multimodal_encoder.encode_images(sample.images)
+
+        # Handle audio (takes precedence if both exist)
+        if sample.audio_paths and audio_encoder:
+            try:
+                if text_encoder == "clap":
+                    step_embeddings = audio_encoder.encode_text_for_audio_alignment(
+                        chain.steps
+                    )
+                modal_embeddings = audio_encoder.encode_audio_from_file(
+                    sample.audio_paths
+                )
+            except Exception as e:
+                if logger:
+                    logger.warning(
+                        f"Failed to encode audio for sample {sample.id}: {e}"
+                    )
+                # Fall back to zero embeddings
+                if modal_embeddings is None:
+                    modal_embeddings = torch.zeros(
+                        audio_encoder.get_embedding_dim()
+                        if audio_encoder
+                        else multimodal_encoder.get_embedding_dim()
+                    ).to("cpu")
+
+        # If no modality data, use zero embeddings
+        if modal_embeddings is None:
+            embedding_dim = (
+                multimodal_encoder.get_embedding_dim()
+                if multimodal_encoder
+                else (
+                    audio_encoder.get_embedding_dim() if audio_encoder else 512
+                )  # Default fallback
+            )
+            modal_embeddings = torch.zeros(embedding_dim).to("cpu")
+
+        # Extract question and answer embeddings
+        if text_encoder == "clap":
+            question_embedding = audio_encoder.encode_text_for_audio_alignment(
+                [sample.question]
+            )
+            answer_embedding = audio_encoder.encode_text_for_audio_alignment(
+                [chain.final_answer]
+            )
+        else:
+            question_embedding = text_encoder(sample.question)
+            answer_embedding = text_encoder(chain.final_answer)
+
+        chain_embedding_data = {
+            "step_embeddings": step_embeddings.cpu(),
+            "modal_embeddings": modal_embeddings.cpu(),
+            "question_embedding": question_embedding.cpu(),
+            "answer_embedding": answer_embedding.cpu(),
+            "modality_type": sample.modality,
+        }
+
+        sample_embeddings.append(chain_embedding_data)
+
+    # Save embeddings if directory is provided
+    if save_embeddings_dir:
+        save_embeddings_dir.mkdir(parents=True, exist_ok=True)
+        embedding_file = save_embeddings_dir / f"{sample.id}.json"
+
+        # Convert tensors to lists for JSON serialization
+        embeddings_serializable = []
+        for chain_emb in sample_embeddings:
+            chain_dict = {
+                k: (v.cpu().numpy().tolist() if isinstance(v, torch.Tensor) else v)
+                for k, v in chain_emb.items()
+            }
+            embeddings_serializable.append(chain_dict)
+
+        with open(embedding_file, "w") as f:
+            json.dump(embeddings_serializable, f, indent=2)
+
+        if logger:
+            logger.debug(f"Saved embeddings to {embedding_file}")
+
+    # Compute coherence scores for this sample
+    sample_scores = []
+
+    for chain_emb in sample_embeddings:
+        # Compute scores using the confidence scorer
+        scores = confidence_scorer(
+            step_embeddings=chain_emb["step_embeddings"],
+            modal_embeddings=chain_emb["modal_embeddings"],
+            question_embedding=chain_emb["question_embedding"],
+            answer_embedding=chain_emb["answer_embedding"],
+        )
+
+        # Convert tensors to floats for JSON serialization
+        def convert_scores(obj):
+            """Recursively convert tensors to floats."""
+            if isinstance(obj, torch.Tensor):
+                if obj.numel() == 1:
+                    return obj.item()
+                else:
+                    return obj.cpu().numpy().tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_scores(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_scores(item) for item in obj]
+            else:
+                return obj
+
+        scores_dict = convert_scores(scores)
+        sample_scores.append(scores_dict)
+
+    # Return embeddings and scores (embeddings can be discarded by caller to save memory)
+    return sample_embeddings, sample_scores
+
+
+def load_embeddings_from_path(
+    embeddings_path: str,
+    samples: List,
+    device: str,
+    logger: Optional[logging.Logger] = None,
+) -> List[List[Dict[str, torch.Tensor]]]:
+    """
+    Load embeddings from either a directory of individual files or a single file.
+
+    Args:
+        embeddings_path: Path to either a directory containing individual embedding files
+                        or a single JSON file with all embeddings
+        samples: List of samples (needed to get sample IDs for directory loading)
+        device: Device to load tensors to
+        logger: Optional logger
+
+    Returns:
+        List of embeddings per sample
+    """
+    path = Path(embeddings_path)
+
+    if path.is_dir():
+        # Load individual files from directory
+        if logger:
+            logger.info(f"Loading embeddings from directory {embeddings_path}...")
+
+        embeddings = []
+        for sample in samples:
+            embedding_file = path / f"{sample.id}.json"
+
+            if not embedding_file.exists():
+                if logger:
+                    logger.warning(
+                        f"Embedding file not found for sample {sample.id}, skipping"
+                    )
+                continue
+
+            with open(embedding_file, "r") as f:
+                sample_embeddings_data = json.load(f)
+
+            # Convert loaded data back to tensors
+            sample_list = []
+            for chain_emb in sample_embeddings_data:
+                chain_dict = {
+                    k: (torch.tensor(v).to(device) if isinstance(v, list) else v)
+                    for k, v in chain_emb.items()
+                }
+                sample_list.append(chain_dict)
+
+            embeddings.append(sample_list)
+
+        if logger:
+            logger.info(f"Loaded embeddings for {len(embeddings)} samples")
+
+    else:
+        # Load from single file (legacy behavior)
+        if logger:
+            logger.info(f"Loading embeddings from file {embeddings_path}...")
+
+        with open(embeddings_path, "r") as f:
+            embeddings_data = json.load(f)
+
+        # Convert loaded data back to tensors
+        embeddings = []
+        for sample_embs in embeddings_data:
+            sample_list = []
+            for chain_emb in sample_embs:
+                chain_dict = {
+                    k: (torch.tensor(v).to(device) if isinstance(v, list) else v)
+                    for k, v in chain_emb.items()
+                }
+                sample_list.append(chain_dict)
+            embeddings.append(sample_list)
+
+        if logger:
+            logger.info(f"Loaded embeddings for {len(embeddings)} samples")
+
+    return embeddings
+
+
 def save_results(
     cots: Optional[List] = None,
     embeddings: Optional[List] = None,
@@ -265,9 +512,16 @@ def save_results(
     save_cots: Optional[str] = None,
     save_embeddings: Optional[str] = None,
     save_scores: Optional[str] = None,
+    samples: Optional[List] = None,
     logger: Optional[logging.Logger] = None,
 ):
-    """Save results to specified paths."""
+    """
+    Save results to specified paths.
+
+    For embeddings:
+    - If save_embeddings is a directory path, saves individual files per sample
+    - If save_embeddings is a file path, saves all embeddings in one file (legacy behavior)
+    """
     if cots and save_cots:
         with open(save_cots, "w") as f:
             json.dump(
@@ -279,22 +533,68 @@ def save_results(
             logger.info(f"Saved CoTs to {save_cots}")
 
     if embeddings and save_embeddings:
-        # Convert tensors to lists for JSON serialization
-        embeddings_serializable = []
-        for sample_embs in embeddings:
-            sample_list = []
-            for chain_emb in sample_embs:
-                chain_dict = {
-                    k: (v.cpu().numpy().tolist() if isinstance(v, torch.Tensor) else v)
-                    for k, v in chain_emb.items()
-                }
-                sample_list.append(chain_dict)
-            embeddings_serializable.append(sample_list)
+        embeddings_path = Path(save_embeddings)
 
-        with open(save_embeddings, "w") as f:
-            json.dump(embeddings_serializable, f, indent=2)
-        if logger:
-            logger.info(f"Saved embeddings to {save_embeddings}")
+        # Determine if this should be saved as directory or single file
+        # Check if path ends with .json or has an extension (treat as file)
+        # Otherwise treat as directory
+        save_as_directory = embeddings_path.suffix == "" or embeddings_path.is_dir()
+
+        if save_as_directory:
+            # Save individual files in directory
+            if not samples:
+                if logger:
+                    logger.error(
+                        "Cannot save embeddings to directory without sample IDs"
+                    )
+                return
+
+            embeddings_path.mkdir(parents=True, exist_ok=True)
+
+            for sample, sample_embs in zip(samples, embeddings):
+                embedding_file = embeddings_path / f"{sample.id}.json"
+
+                # Convert tensors to lists for JSON serialization
+                embeddings_serializable = []
+                for chain_emb in sample_embs:
+                    chain_dict = {
+                        k: (
+                            v.cpu().numpy().tolist()
+                            if isinstance(v, torch.Tensor)
+                            else v
+                        )
+                        for k, v in chain_emb.items()
+                    }
+                    embeddings_serializable.append(chain_dict)
+
+                with open(embedding_file, "w") as f:
+                    json.dump(embeddings_serializable, f, indent=2)
+
+            if logger:
+                logger.info(
+                    f"Saved {len(embeddings)} embedding files to directory {save_embeddings}"
+                )
+        else:
+            # Save as single file (legacy behavior)
+            embeddings_serializable = []
+            for sample_embs in embeddings:
+                sample_list = []
+                for chain_emb in sample_embs:
+                    chain_dict = {
+                        k: (
+                            v.cpu().numpy().tolist()
+                            if isinstance(v, torch.Tensor)
+                            else v
+                        )
+                        for k, v in chain_emb.items()
+                    }
+                    sample_list.append(chain_dict)
+                embeddings_serializable.append(sample_list)
+
+            with open(save_embeddings, "w") as f:
+                json.dump(embeddings_serializable, f, indent=2)
+            if logger:
+                logger.info(f"Saved embeddings to {save_embeddings}")
 
     if scores and save_scores:
         with open(save_scores, "w") as f:
@@ -504,6 +804,12 @@ def main():
         default=None,
         help="Path to load pre-computed embeddings from",
     )
+    parser.add_argument(
+        "--sequential_processing",
+        action="store_true",
+        help="Process samples sequentially (extract embeddings and score one at a time) to reduce memory usage. "
+        "When enabled, embeddings are saved/loaded as individual files in a directory.",
+    )
 
     args = parser.parse_args()
 
@@ -547,9 +853,14 @@ def main():
         cots = []
         for idx, sample in enumerate(samples):
             logger.info(f"Generating CoTs for sample {idx + 1}/{len(samples)}")
-            chains = generator.generate_cot_from_sample(
-                sample, max_new_tokens=args.max_new_tokens, num_chains=args.num_chains
-            )
+            try:
+                chains = generator.generate_cot_from_sample(
+                    sample,
+                    max_new_tokens=args.max_new_tokens,
+                    num_chains=args.num_chains,
+                )
+            except:
+                continue
             cots.append(chains)
     elif args.load_cots:
         logger.info(f"Loading CoTs from {args.load_cots}...")
@@ -557,9 +868,22 @@ def main():
             cots = json.load(f)
         # Note: You may need to reconstruct CoTChain objects from loaded data
         logger.info(f"Loaded {len(cots)} sample CoTs")
+        cots = [[CoTChain(**chain) for chain in cot] for cot in cots]
     else:
         logger.error("Must either generate CoTs or provide --load_cots path")
         return
+
+    if args.save_cots:
+        save_results(
+            cots=cots,
+            embeddings=None,
+            scores=None,
+            save_cots=args.save_cots,
+            save_embeddings=None,
+            save_scores=None,
+            samples=samples,
+            logger=logger,
+        )
 
     # Limit number of chains for scoring if specified
     if args.num_chains_for_scoring is not None and cots is not None:
@@ -569,55 +893,6 @@ def main():
         cots = [chains[: args.num_chains_for_scoring] for chains in cots]
         logger.info(f"Using {len(cots[0])} chains per sample")
 
-    # Extract or load embeddings
-    embeddings = None
-    if not args.skip_embedding_extraction:
-        # Setup encoders
-        text_encoder, multimodal_encoder, audio_encoder = setup_encoders(
-            args, device, logger
-        )
-
-        # Extract embeddings
-        embeddings = extract_embeddings(
-            samples=samples,
-            cot_chains=cots,
-            text_encoder=text_encoder,
-            multimodal_encoder=multimodal_encoder,
-            audio_encoder=audio_encoder,
-            device=device,
-            logger=logger,
-        )
-    elif args.load_embeddings:
-        logger.info(f"Loading embeddings from {args.load_embeddings}...")
-        with open(args.load_embeddings, "r") as f:
-            embeddings_data = json.load(f)
-
-        # Convert loaded data back to tensors
-        embeddings = []
-        for sample_embs in embeddings_data:
-            sample_list = []
-            for chain_emb in sample_embs:
-                chain_dict = {
-                    k: (torch.tensor(v).to(device) if isinstance(v, list) else v)
-                    for k, v in chain_emb.items()
-                }
-                sample_list.append(chain_dict)
-            embeddings.append(sample_list)
-
-        logger.info(f"Loaded embeddings for {len(embeddings)} samples")
-
-        # Limit embeddings if num_chains_for_scoring is specified
-        if args.num_chains_for_scoring is not None:
-            logger.info(
-                f"Limiting embeddings to {args.num_chains_for_scoring} chains per sample"
-            )
-            embeddings = [
-                sample_embs[: args.num_chains_for_scoring] for sample_embs in embeddings
-            ]
-    else:
-        logger.error("Must either extract embeddings or provide --load_embeddings path")
-        return
-
     # Setup coherence metrics and confidence scorer
     logger.info("Setting up coherence metrics and confidence scorer...")
     internal_metric, cross_modal_metric = setup_coherence_metrics(args)
@@ -625,10 +900,169 @@ def main():
         args, internal_metric, cross_modal_metric
     )
 
-    # Compute coherence scores
-    scores = compute_coherence_scores(
-        embeddings=embeddings, confidence_scorer=confidence_scorer, logger=logger
-    )
+    # Process samples sequentially or in batch
+    embeddings = None
+    scores = None
+
+    if args.sequential_processing:
+        # Sequential processing: extract embeddings and score one sample at a time
+        # This mode minimizes memory usage by not keeping all embeddings in memory
+        logger.info("Using sequential processing mode (memory efficient)")
+
+        if not args.skip_embedding_extraction:
+            # Setup encoders
+            text_encoder, multimodal_encoder, audio_encoder = setup_encoders(
+                args, device, logger
+            )
+
+            # Process each sample sequentially
+            scores = []
+            save_embeddings_dir = (
+                Path(args.save_embeddings) if args.save_embeddings else None
+            )
+
+            for idx, (sample, sample_chains) in enumerate(zip(samples, cots)):
+                _, sample_scores = process_sample_sequential(
+                    sample=sample,
+                    sample_idx=idx,
+                    cot_chains=sample_chains,
+                    text_encoder=text_encoder,
+                    multimodal_encoder=multimodal_encoder,
+                    audio_encoder=audio_encoder,
+                    confidence_scorer=confidence_scorer,
+                    device=device,
+                    save_embeddings_dir=save_embeddings_dir,
+                    logger=logger,
+                )
+                scores.append(sample_scores)
+
+            logger.info("Sequential processing complete")
+
+        elif args.load_embeddings:
+            # Load embeddings sequentially and score them
+            embeddings_path = Path(args.load_embeddings)
+
+            if not embeddings_path.is_dir():
+                logger.error(
+                    "Sequential processing requires embeddings to be stored in a directory. "
+                    f"Provided path {args.load_embeddings} is not a directory."
+                )
+                return
+
+            scores = []
+            for idx, sample in enumerate(samples):
+                embedding_file = embeddings_path / f"{sample.id}.json"
+
+                if not embedding_file.exists():
+                    logger.warning(
+                        f"Embedding file not found for sample {sample.id}, skipping"
+                    )
+                    continue
+
+                with open(embedding_file, "r") as f:
+                    sample_embeddings_data = json.load(f)
+
+                # Convert loaded data back to tensors
+                sample_embeddings = []
+                for chain_emb in sample_embeddings_data:
+                    chain_dict = {
+                        k: (torch.tensor(v).to(device) if isinstance(v, list) else v)
+                        for k, v in chain_emb.items()
+                    }
+                    sample_embeddings.append(chain_dict)
+
+                # Limit chains if specified
+                if args.num_chains_for_scoring is not None:
+                    sample_embeddings = sample_embeddings[: args.num_chains_for_scoring]
+
+                # Compute coherence scores for this sample
+                sample_scores = []
+                for chain_emb in sample_embeddings:
+                    scores_result = confidence_scorer(
+                        step_embeddings=chain_emb["step_embeddings"],
+                        modal_embeddings=chain_emb["modal_embeddings"],
+                        question_embedding=chain_emb["question_embedding"],
+                        answer_embedding=chain_emb["answer_embedding"],
+                    )
+
+                    # Convert tensors to floats for JSON serialization
+                    def convert_scores(obj):
+                        if isinstance(obj, torch.Tensor):
+                            if obj.numel() == 1:
+                                return obj.item()
+                            else:
+                                return obj.cpu().numpy().tolist()
+                        elif isinstance(obj, dict):
+                            return {k: convert_scores(v) for k, v in obj.items()}
+                        elif isinstance(obj, list):
+                            return [convert_scores(item) for item in obj]
+                        else:
+                            return obj
+
+                    scores_dict = convert_scores(scores_result)
+                    sample_scores.append(scores_dict)
+
+                scores.append(sample_scores)
+
+                if (idx + 1) % 10 == 0:
+                    logger.info(f"Scored sample {idx + 1}/{len(samples)}")
+
+            logger.info("Sequential scoring complete")
+
+        else:
+            logger.error(
+                "Must either extract embeddings or provide --load_embeddings path"
+            )
+            return
+
+    else:
+        # Batch processing: extract all embeddings first, then score
+        logger.info("Using batch processing mode")
+
+        if not args.skip_embedding_extraction:
+            # Setup encoders
+            text_encoder, multimodal_encoder, audio_encoder = setup_encoders(
+                args, device, logger
+            )
+
+            # Extract embeddings
+            embeddings = extract_embeddings(
+                samples=samples,
+                cot_chains=cots,
+                text_encoder=text_encoder,
+                multimodal_encoder=multimodal_encoder,
+                audio_encoder=audio_encoder,
+                device=device,
+                logger=logger,
+            )
+        elif args.load_embeddings:
+            # Load embeddings from file or directory
+            embeddings = load_embeddings_from_path(
+                embeddings_path=args.load_embeddings,
+                samples=samples,
+                device=device,
+                logger=logger,
+            )
+
+            # Limit embeddings if num_chains_for_scoring is specified
+            if args.num_chains_for_scoring is not None:
+                logger.info(
+                    f"Limiting embeddings to {args.num_chains_for_scoring} chains per sample"
+                )
+                embeddings = [
+                    sample_embs[: args.num_chains_for_scoring]
+                    for sample_embs in embeddings
+                ]
+        else:
+            logger.error(
+                "Must either extract embeddings or provide --load_embeddings path"
+            )
+            return
+
+        # Compute coherence scores
+        scores = compute_coherence_scores(
+            embeddings=embeddings, confidence_scorer=confidence_scorer, logger=logger
+        )
 
     # Save results
     logger.info("Saving results...")
@@ -636,9 +1070,10 @@ def main():
         cots=cots,
         embeddings=embeddings if args.save_embeddings else None,
         scores=scores,
-        save_cots=args.save_cots,
+        save_cots=None,
         save_embeddings=args.save_embeddings,
         save_scores=args.save_scores,
+        samples=samples,
         logger=logger,
     )
 

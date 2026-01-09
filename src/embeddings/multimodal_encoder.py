@@ -6,7 +6,13 @@ from typing import List, Optional, Union, Tuple
 import torch
 import torch.nn as nn
 from PIL import Image
-from transformers import CLIPModel, CLIPProcessor, AutoProcessor, Wav2Vec2Model, Wav2Vec2Processor
+from transformers import (
+    CLIPModel,
+    CLIPProcessor,
+    AutoProcessor,
+    Wav2Vec2Model,
+    Wav2Vec2Processor,
+)
 import open_clip
 import numpy as np
 
@@ -24,7 +30,7 @@ class MultimodalEncoder(nn.Module):
         self,
         model_name: str = "openai/clip-vit-large-patch14",
         device: str = "cuda",
-        use_open_clip: bool = False
+        use_open_clip: bool = False,
     ):
         """
         Initialize multimodal encoder.
@@ -52,18 +58,15 @@ class MultimodalEncoder(nn.Module):
 
     def _load_open_clip(self):
         """Load CLIP from open_clip."""
-        model_name = self.model_name.split('/')[-1]
+        model_name = self.model_name.split("/")[-1]
         self.model, _, self.processor = open_clip.create_model_and_transforms(
-            model_name,
-            device=self.device
+            model_name, device=self.device
         )
         self.tokenizer = open_clip.get_tokenizer(model_name)
         self.embedding_dim = self.model.visual.output_dim
 
     def encode_text(
-        self,
-        texts: Union[str, List[str]],
-        normalize: bool = True
+        self, texts: Union[str, List[str]], normalize: bool = True
     ) -> torch.Tensor:
         """
         Encode text to embeddings.
@@ -87,10 +90,7 @@ class MultimodalEncoder(nn.Module):
                 text_features = self.model.encode_text(tokens)
         else:
             inputs = self.processor(
-                text=texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True
+                text=texts, return_tensors="pt", padding=True, truncation=True
             ).to(self.device)
 
             with torch.no_grad():
@@ -105,9 +105,7 @@ class MultimodalEncoder(nn.Module):
         return text_features
 
     def encode_images(
-        self,
-        images: Union[Image.Image, List[Image.Image]],
-        normalize: bool = True
+        self, images: Union[Image.Image, List[Image.Image]], normalize: bool = True
     ) -> torch.Tensor:
         """
         Encode images to embeddings.
@@ -126,16 +124,13 @@ class MultimodalEncoder(nn.Module):
             return_single = False
 
         if self.use_open_clip:
-            image_tensors = torch.stack([
-                self.processor(img).to(self.device) for img in images
-            ])
+            image_tensors = torch.stack(
+                [self.processor(img).to(self.device) for img in images]
+            )
             with torch.no_grad():
                 image_features = self.model.encode_image(image_tensors)
         else:
-            inputs = self.processor(
-                images=images,
-                return_tensors="pt"
-            ).to(self.device)
+            inputs = self.processor(images=images, return_tensors="pt").to(self.device)
 
             with torch.no_grad():
                 image_features = self.model.get_image_features(**inputs)
@@ -149,10 +144,7 @@ class MultimodalEncoder(nn.Module):
         return image_features
 
     def encode_multimodal(
-        self,
-        texts: List[str],
-        images: List[Image.Image],
-        normalize: bool = True
+        self, texts: List[str], images: List[Image.Image], normalize: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Encode both text and images.
@@ -171,9 +163,7 @@ class MultimodalEncoder(nn.Module):
         return text_features, image_features
 
     def compute_similarity(
-        self,
-        text_embeds: torch.Tensor,
-        image_embeds: torch.Tensor
+        self, text_embeds: torch.Tensor, image_embeds: torch.Tensor
     ) -> torch.Tensor:
         """
         Compute similarity between text and image embeddings.
@@ -197,7 +187,7 @@ class MultimodalEncoder(nn.Module):
     def forward(
         self,
         texts: Optional[List[str]] = None,
-        images: Optional[List[Image.Image]] = None
+        images: Optional[List[Image.Image]] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Forward pass for encoding.
@@ -234,7 +224,7 @@ class AudioEncoder(nn.Module):
         model_name: str = "facebook/wav2vec2-base-960h",
         device: str = "cuda",
         use_clap: bool = False,
-        target_sample_rate: int = 16000
+        target_sample_rate: int = 16000,
     ):
         """
         Initialize audio encoder.
@@ -269,6 +259,7 @@ class AudioEncoder(nn.Module):
         try:
             # Try to load CLAP from laion_clap library
             import laion_clap
+
             self.model = laion_clap.CLAP_Module(enable_fusion=False, device=self.device)
             self.model.load_ckpt(self.model_name)
             self.embedding_dim = 512  # CLAP default embedding dimension
@@ -283,7 +274,7 @@ class AudioEncoder(nn.Module):
         self,
         audio_data: Union[np.ndarray, List[np.ndarray]],
         sample_rate: Optional[int] = None,
-        normalize: bool = True
+        normalize: bool = True,
     ) -> torch.Tensor:
         """
         Encode audio to embeddings.
@@ -304,24 +295,25 @@ class AudioEncoder(nn.Module):
 
         # Resample if necessary
         if sample_rate is not None and sample_rate != self.target_sample_rate:
-            audio_data = self._resample_audio(audio_data, sample_rate, self.target_sample_rate)
+            audio_data = self._resample_audio(
+                audio_data, sample_rate, self.target_sample_rate
+            )
 
         if self.use_clap:
             # CLAP encoding
             if isinstance(audio_data[0], np.ndarray):
                 audio_data = [torch.from_numpy(x) for x in audio_data]
             audio_features = self.model.get_audio_embedding_from_data(
-                x=audio_data,
-                use_tensor=True
+                x=audio_data, use_tensor=True
             )
-            audio_features = audio_features.to(self.device)
+            audio_features = audio_features.to("cpu")
         else:
             # Wav2Vec2 encoding
             inputs = self.processor(
                 audio_data,
                 sampling_rate=self.target_sample_rate,
                 return_tensors="pt",
-                padding=True
+                padding=True,
             ).to(self.device)
 
             with torch.no_grad():
@@ -338,9 +330,7 @@ class AudioEncoder(nn.Module):
         return audio_features
 
     def encode_audio_from_file(
-        self,
-        audio_paths: Union[str, List[str]],
-        normalize: bool = True
+        self, audio_paths: Union[str, List[str]], normalize: bool = True
     ) -> torch.Tensor:
         """
         Encode audio from file path(s).
@@ -387,6 +377,7 @@ class AudioEncoder(nn.Module):
         """
         try:
             import librosa
+
             audio, sr = librosa.load(path, sr=None)
             return audio, sr
         except ImportError:
@@ -396,10 +387,7 @@ class AudioEncoder(nn.Module):
             )
 
     def _resample_audio(
-        self,
-        audio_data: List[np.ndarray],
-        orig_sr: int,
-        target_sr: int
+        self, audio_data: List[np.ndarray], orig_sr: int, target_sr: int
     ) -> List[np.ndarray]:
         """
         Resample audio to target sample rate.
@@ -414,6 +402,7 @@ class AudioEncoder(nn.Module):
         """
         try:
             import librosa
+
             resampled = [
                 librosa.resample(audio, orig_sr=orig_sr, target_sr=target_sr)
                 for audio in audio_data
@@ -426,9 +415,7 @@ class AudioEncoder(nn.Module):
             )
 
     def encode_text_for_audio_alignment(
-        self,
-        texts: Union[str, List[str]],
-        normalize: bool = True
+        self, texts: Union[str, List[str]], normalize: bool = True
     ) -> torch.Tensor:
         """
         Encode text for alignment with audio (only works with CLAP).
@@ -454,7 +441,7 @@ class AudioEncoder(nn.Module):
 
         # Encode text with CLAP
         text_features = self.model.get_text_embedding(texts, use_tensor=True)
-        text_features = text_features.to(self.device)
+        text_features = text_features.to("cpu")
 
         if normalize:
             text_features = torch.nn.functional.normalize(text_features, p=2, dim=-1)
@@ -465,9 +452,7 @@ class AudioEncoder(nn.Module):
         return text_features
 
     def compute_audio_text_similarity(
-        self,
-        audio_embeds: torch.Tensor,
-        text_embeds: torch.Tensor
+        self, audio_embeds: torch.Tensor, text_embeds: torch.Tensor
     ) -> torch.Tensor:
         """
         Compute similarity between audio and text embeddings.
@@ -490,7 +475,7 @@ class AudioEncoder(nn.Module):
     def forward(
         self,
         audio_data: Optional[Union[np.ndarray, List[np.ndarray]]] = None,
-        texts: Optional[Union[str, List[str]]] = None
+        texts: Optional[Union[str, List[str]]] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Forward pass for encoding.
