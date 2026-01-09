@@ -361,13 +361,15 @@ def process_sample_sequential(
             question_embedding = text_encoder(sample.question)
             answer_embedding = text_encoder(chain.final_answer)
 
-        if not step_embeddings:
+        try:
+            step_embeddings = step_embeddings.cpu()
+        except:
             step_embeddings = torch.zeros(
                 (len(chain.steps), text_encoder.get_embedding_dim())
             ).to("cpu")
 
         chain_embedding_data = {
-            "step_embeddings": step_embeddings.cpu(),
+            "step_embeddings": step_embeddings,
             "modal_embeddings": modal_embeddings.cpu(),
             "question_embedding": question_embedding.cpu(),
             "answer_embedding": answer_embedding.cpu(),
