@@ -364,9 +364,14 @@ def process_sample_sequential(
         try:
             step_embeddings = step_embeddings.cpu()
         except:
-            step_embeddings = torch.zeros(
-                (len(chain.steps), text_encoder.get_embedding_dim())
-            ).to("cpu")
+            if text_encoder == "clap":
+                step_embeddings = torch.zeros(
+                    (1, audio_encoder.get_embedding_dim())
+                ).to("cpu")
+            else:
+                step_embeddings = torch.zeros((1, text_encoder.get_embedding_dim())).to(
+                    "cpu"
+                )
 
         chain_embedding_data = {
             "step_embeddings": step_embeddings,
