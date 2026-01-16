@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.dataset.uno_bench_loader import UNOBenchLoader
-from src.dataset.cot_generator import CoTGenerator, CoTChain
+from src.dataset.cot_generator import CoTGenerator, CoTChain, OpenAICoTGenerator
 from src.embeddings import TextEncoder, MultimodalEncoder, AudioEncoder
 from src.coherence import (
     InternalCoherenceMetric,
@@ -655,7 +655,18 @@ def main():
         "--cot_model_type",
         type=str,
         default="qwen2_audio",
-        help="Model type for CoT generation",
+        help="Model type for CoT generation (only for VLLM models)",
+    )
+    parser.add_argument(
+        "--use_openai_api",
+        action="store_true",
+        help="Use OpenAI API instead of VLLM for CoT generation",
+    )
+    parser.add_argument(
+        "--openai_api_key",
+        type=str,
+        default=None,
+        help="OpenAI API key (if None, will use OPENAI_API_KEY environment variable)",
     )
     parser.add_argument(
         "--num_chains",
@@ -858,9 +869,20 @@ def main():
     cots = None
     if not args.skip_cot_generation:
         logger.info("Generating CoT chains...")
-        generator = CoTGenerator(
-            model_name=args.cot_model_name, model_type=args.cot_model_type
-        )
+
+        # Choose generator based on API flag
+        if args.use_openai_api:
+            logger.info("Using OpenAI API for CoT generation")
+            generator = OpenAICoTGenerator(
+                model_name=args.cot_model_name,
+                api_key=args.openai_api_key,
+            )
+        else:
+            logger.info("Using VLLM for CoT generation")
+            generator = CoTGenerator(
+                model_name=args.cot_model_name,
+                model_type=args.cot_model_type
+            )
 
         cots = []
         for idx, sample in enumerate(samples):
