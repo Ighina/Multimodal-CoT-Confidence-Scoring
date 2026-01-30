@@ -239,6 +239,39 @@ def create_aggregation_methods(
     return methods
 
 
+def shuffle_data(labels: np.ndarray, score_arrays: Dict[str, np.ndarray], seed: int = 42) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """
+    Shuffle labels and corresponding scores within each group (example).
+
+    This maintains the correspondence between labels and scores while
+    randomizing their order within each example's chains.
+
+    Args:
+        labels: Binary labels array of shape (num_examples, n_chains)
+        score_arrays: Dictionary of score arrays, each of shape (num_examples, n_chains)
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (shuffled_labels, shuffled_score_arrays)
+    """
+    np.random.seed(seed)
+
+    shuffled_labels = labels.copy()
+    shuffled_score_arrays = {key: arr.copy() for key, arr in score_arrays.items()}
+
+    # Shuffle each example (row) independently
+    for i in range(labels.shape[0]):
+        # Generate a random permutation for this example
+        perm = np.random.permutation(labels.shape[1])
+
+        # Apply the same permutation to labels and all score arrays
+        shuffled_labels[i] = labels[i, perm]
+        for key in shuffled_score_arrays:
+            shuffled_score_arrays[key][i] = score_arrays[key][i, perm]
+
+    return shuffled_labels, shuffled_score_arrays
+
+
 def normalize_confidences(confidences: np.ndarray) -> np.ndarray:
     """
     Normalize confidence scores to [0, 1] range.
@@ -288,6 +321,11 @@ def main():
         action="store_true",
         help="Normalize confidence scores to [0, 1] range",
     )
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="Randomly shuffle labels and scores within each group (maintains correspondence)",
+    )
 
     args = parser.parse_args()
 
@@ -303,6 +341,11 @@ def main():
 
     print(f"Extracting score arrays")
     score_arrays = extract_score_arrays(scores_data, args.n_chains)
+
+    # Shuffle if requested
+    if args.shuffle:
+        print("Shuffling labels and scores within each group")
+        labels, score_arrays = shuffle_data(labels, score_arrays)
 
     print(f"Creating aggregation methods")
     confidence_methods = create_aggregation_methods(score_arrays, labels)
@@ -360,6 +403,7 @@ def main():
             "cots_path": args.cots_path,
             "scores_path": args.scores_path,
             "normalized": args.normalize,
+            "shuffled": args.shuffle,
         },
     }
 
