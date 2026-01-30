@@ -33,7 +33,9 @@ def load_json(file_path: str) -> List:
         return json.load(f)
 
 
-def extract_labels(cots_data: List[List[Dict]], n_chains: int, indices: List[int] = None) -> np.ndarray:
+def extract_labels(
+    cots_data: List[List[Dict]], n_chains: int, indices: List[int] = None
+) -> np.ndarray:
     """
     Extract labels from CoTs data.
 
@@ -263,7 +265,9 @@ def create_aggregation_methods(
     return methods
 
 
-def shuffle_data(labels: np.ndarray, score_arrays: Dict[str, np.ndarray], seed: int = 42) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+def shuffle_data(
+    labels: np.ndarray, score_arrays: Dict[str, np.ndarray], seed: int = 42
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     """
     Shuffle labels and corresponding scores within each group (example).
 
@@ -406,7 +410,9 @@ def compute_statistical_tests(
                 method_values[method].append(results[method][metric_key])
 
     # Convert to arrays
-    method_arrays = {method: np.array(values) for method, values in method_values.items()}
+    method_arrays = {
+        method: np.array(values) for method, values in method_values.items()
+    }
 
     # Perform pairwise tests (comparing each method to the next in ranking)
     statistical_tests = {}
@@ -480,7 +486,9 @@ def aggregate_multiple_results(
 
         for results in all_results:
             if method_name in results:
-                metrics["in_group_accuracy"].append(results[method_name]["in_group_accuracy"])
+                metrics["in_group_accuracy"].append(
+                    results[method_name]["in_group_accuracy"]
+                )
                 metrics["auc_roc"].append(results[method_name]["auc_roc"])
                 metrics["ece"].append(results[method_name]["ece"])
 
@@ -523,10 +531,12 @@ def aggregate_multiple_results(
 
         # Compute mean rank and sort
         mean_ranks = {
-            method: np.mean(ranks) if len(ranks) > 0 else float('inf')
+            method: np.mean(ranks) if len(ranks) > 0 else float("inf")
             for method, ranks in method_ranks.items()
         }
-        aggregated_rankings[ranking_key] = sorted(mean_ranks.keys(), key=lambda m: mean_ranks[m])
+        aggregated_rankings[ranking_key] = sorted(
+            mean_ranks.keys(), key=lambda m: mean_ranks[m]
+        )
 
     # Compute statistical tests for top 3 methods in each category
     statistical_tests = {}
@@ -661,7 +671,9 @@ def main():
         # Print individual method results
         for method_name in method_results:
             results = method_results[method_name]
-            print(f"  {method_name}: AUC-ROC: {results['auc_roc']:.4f}, ECE: {results['ece']:.4f}")
+            print(
+                f"  {method_name}: AUC-ROC: {results['auc_roc']:.4f}, ECE: {results['ece']:.4f}"
+            )
 
         print("\nComparing methods...")
         aggregation = None
@@ -675,6 +687,8 @@ def main():
             return int(obj)
         elif isinstance(obj, (np.floating, np.float64)):
             return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
         elif isinstance(obj, dict):
             return {key: convert_to_serializable(value) for key, value in obj.items()}
         elif isinstance(obj, list):
@@ -694,7 +708,9 @@ def main():
             "normalized": args.normalize,
             "shuffled": args.shuffle,
             "multiple_experiments": args.multiple_experiments,
-            "multiple_iterations": args.multiple_iterations if args.multiple_experiments else 1,
+            "multiple_iterations": (
+                args.multiple_iterations if args.multiple_experiments else 1
+            ),
         },
     }
 
@@ -721,24 +737,38 @@ def main():
 
         # Print top 3 methods with confidence intervals
         print("\nTop 3 methods by in-group accuracy (with 95% CI):")
-        for i, method_name in enumerate(aggregation["aggregated_rankings"]["in_group_accuracy_ranking"][:3], 1):
-            metrics = aggregation["aggregated_metrics"][method_name]["in_group_accuracy"]
+        for i, method_name in enumerate(
+            aggregation["aggregated_rankings"]["in_group_accuracy_ranking"][:3], 1
+        ):
+            metrics = aggregation["aggregated_metrics"][method_name][
+                "in_group_accuracy"
+            ]
             print(f"  {i}. {method_name}:")
-            print(f"     Mean: {metrics['mean']:.4f} (95% CI: [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])")
+            print(
+                f"     Mean: {metrics['mean']:.4f} (95% CI: [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])"
+            )
             print(f"     Std: {metrics['std']:.4f}")
 
         print("\nTop 3 methods by AUC-ROC (with 95% CI):")
-        for i, method_name in enumerate(aggregation["aggregated_rankings"]["auc_roc_ranking"][:3], 1):
+        for i, method_name in enumerate(
+            aggregation["aggregated_rankings"]["auc_roc_ranking"][:3], 1
+        ):
             metrics = aggregation["aggregated_metrics"][method_name]["auc_roc"]
             print(f"  {i}. {method_name}:")
-            print(f"     Mean: {metrics['mean']:.4f} (95% CI: [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])")
+            print(
+                f"     Mean: {metrics['mean']:.4f} (95% CI: [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])"
+            )
             print(f"     Std: {metrics['std']:.4f}")
 
         print("\nTop 3 methods by ECE (lower is better, with 95% CI):")
-        for i, method_name in enumerate(aggregation["aggregated_rankings"]["ece_ranking"][:3], 1):
+        for i, method_name in enumerate(
+            aggregation["aggregated_rankings"]["ece_ranking"][:3], 1
+        ):
             metrics = aggregation["aggregated_metrics"][method_name]["ece"]
             print(f"  {i}. {method_name}:")
-            print(f"     Mean: {metrics['mean']:.4f} (95% CI: [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])")
+            print(
+                f"     Mean: {metrics['mean']:.4f} (95% CI: [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])"
+            )
             print(f"     Std: {metrics['std']:.4f}")
 
         # Print statistical test results
@@ -765,12 +795,18 @@ def main():
 
                     print(f"\n  {method_a} vs {method_b}:")
                     print(f"    Mean difference: {mean_diff:.4f}")
-                    print(f"    Paired t-test: p={t_pval:.4f} {'***' if t_pval < 0.001 else '**' if t_pval < 0.01 else '*' if t_pval < 0.05 else 'n.s.'}")
-                    print(f"    Wilcoxon test: p={w_pval:.4f} {'***' if w_pval < 0.001 else '**' if w_pval < 0.01 else '*' if w_pval < 0.05 else 'n.s.'}")
+                    print(
+                        f"    Paired t-test: p={t_pval:.4f} {'***' if t_pval < 0.001 else '**' if t_pval < 0.01 else '*' if t_pval < 0.05 else 'n.s.'}"
+                    )
+                    print(
+                        f"    Wilcoxon test: p={w_pval:.4f} {'***' if w_pval < 0.001 else '**' if w_pval < 0.01 else '*' if w_pval < 0.05 else 'n.s.'}"
+                    )
 
                     if t_pval < 0.05:
                         direction = "better" if mean_diff > 0 else "worse"
-                        print(f"    Result: {method_a} is significantly {direction} than {method_b}")
+                        print(
+                            f"    Result: {method_a} is significantly {direction} than {method_b}"
+                        )
                     else:
                         print(f"    Result: No significant difference")
 
