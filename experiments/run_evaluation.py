@@ -347,8 +347,8 @@ def main():
 
     # Prepare output
     output = {
-        'method_results': {},
-        'comparison': convert_to_serializable(comparison),
+        'method_results': method_results,
+        'comparison': comparison,
         'metadata': {
             'n_chains': args.n_chains,
             'n_examples': len(cots_data),
@@ -358,21 +358,8 @@ def main():
         }
     }
 
-    # Convert numpy arrays to lists for JSON serialization
-    for method_name, results in method_results.items():
-        serializable_results = {}
-        for key, value in results.items():
-            if isinstance(value, np.ndarray):
-                serializable_results[key] = value.tolist()
-            elif isinstance(value, (np.integer, np.floating)):
-                serializable_results[key] = float(value)
-            elif isinstance(value, dict):
-                serializable_results[key] = value
-            elif isinstance(value, list):
-                serializable_results[key] = value
-            else:
-                serializable_results[key] = value
-        output['method_results'][method_name] = serializable_results
+    # Convert entire output to serializable format
+    output = convert_to_serializable(output)
 
     # Save results
     print(f"\nSaving results to: {args.output_file}")
