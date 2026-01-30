@@ -4,6 +4,13 @@ Evaluation script for comparing different confidence aggregation methods.
 This script evaluates Chain-of-Thought (CoT) results by comparing various
 confidence aggregation methods using different score combinations, including
 a majority vote baseline that uses the percentage of correct chains per group.
+
+Features:
+- Single evaluation: Run evaluation once with optional shuffling
+- Multiple experiments: Run multiple iterations with shuffling to create confidence
+  intervals and perform statistical tests comparing the top 3 methods in each category.
+  Use --multiple_experiments with --shuffle and optionally --multiple_iterations to
+  control the number of iterations (default: 1000).
 """
 
 import argparse
@@ -12,6 +19,7 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Tuple
 import numpy as np
+from scipy import stats
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -307,6 +315,239 @@ def normalize_confidences(confidences: np.ndarray) -> np.ndarray:
     return (confidences - min_val) / (max_val - min_val)
 
 
+def run_single_evaluation(
+    cots_data: List,
+    scores_data: List,
+    n_chains: int,
+    normalize: bool,
+    shuffle: bool,
+    seed: int = None,
+) -> Tuple[Dict, Dict]:
+    """
+    Run a single evaluation iteration.
+
+    Args:
+        cots_data: List of CoT data
+        scores_data: List of score data
+        n_chains: Number of chains per example
+        normalize: Whether to normalize confidence scores
+        shuffle: Whether to shuffle the data
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (method_results, comparison)
+    """
+    # Generate random indices if shuffle is requested
+    random_indices = None
+    if shuffle:
+        if seed is not None:
+            np.random.seed(seed)
+        random_indices = np.random.permutation(
+            max(len(example) for example in cots_data)
+        )[:n_chains].tolist()
+
+    # Extract labels and scores
+    labels = extract_labels(cots_data, n_chains, indices=random_indices)
+    score_arrays = extract_score_arrays(scores_data, n_chains, indices=random_indices)
+
+    # Create aggregation methods
+    confidence_methods = create_aggregation_methods(score_arrays, labels)
+
+    # Normalize if requested
+    if normalize:
+        confidence_methods = {
+            name: normalize_confidences(conf)
+            for name, conf in confidence_methods.items()
+        }
+
+    # Evaluate each method
+    method_results = {}
+    for method_name, confidences in confidence_methods.items():
+        try:
+            results = evaluate_confidence_scores(confidences, labels)
+            method_results[method_name] = results
+        except Exception as e:
+            print(f"    ERROR evaluating {method_name}: {e}")
+            continue
+
+    # Compare methods
+    comparison = compare_methods(method_results)
+
+    return method_results, comparison
+
+
+def compute_statistical_tests(
+    all_results: List[Dict],
+    ranking_key: str,
+    metric_key: str,
+    top_n: int = 3,
+) -> Dict:
+    """
+    Compute statistical tests comparing top methods.
+
+    Args:
+        all_results: List of method_results from each iteration
+        ranking_key: Key for the ranking (e.g., "in_group_accuracy_ranking")
+        metric_key: Key for the metric (e.g., "in_group_accuracy")
+        top_n: Number of top methods to test
+
+    Returns:
+        Dictionary with statistical test results
+    """
+    # Get the top methods from the first iteration (as reference)
+    first_comparison = compare_methods(all_results[0])
+    top_methods = first_comparison[ranking_key][:top_n]
+
+    # Collect metric values for each method across all iterations
+    method_values = {method: [] for method in top_methods}
+    for results in all_results:
+        for method in top_methods:
+            if method in results:
+                method_values[method].append(results[method][metric_key])
+
+    # Convert to arrays
+    method_arrays = {method: np.array(values) for method, values in method_values.items()}
+
+    # Perform pairwise tests (comparing each method to the next in ranking)
+    statistical_tests = {}
+    for i in range(len(top_methods) - 1):
+        method_a = top_methods[i]
+        method_b = top_methods[i + 1]
+
+        if method_a in method_arrays and method_b in method_arrays:
+            values_a = method_arrays[method_a]
+            values_b = method_arrays[method_b]
+
+            # Paired t-test (parametric)
+            t_stat, t_pval = stats.ttest_rel(values_a, values_b)
+
+            # Wilcoxon signed-rank test (non-parametric)
+            w_stat, w_pval = stats.wilcoxon(values_a, values_b)
+
+            test_key = f"{method_a}_vs_{method_b}"
+            statistical_tests[test_key] = {
+                "method_a": method_a,
+                "method_b": method_b,
+                "mean_a": float(np.mean(values_a)),
+                "mean_b": float(np.mean(values_b)),
+                "std_a": float(np.std(values_a)),
+                "std_b": float(np.std(values_b)),
+                "mean_diff": float(np.mean(values_a - values_b)),
+                "paired_t_test": {
+                    "statistic": float(t_stat),
+                    "p_value": float(t_pval),
+                    "significant_at_0.05": t_pval < 0.05,
+                    "significant_at_0.01": t_pval < 0.01,
+                },
+                "wilcoxon_test": {
+                    "statistic": float(w_stat),
+                    "p_value": float(w_pval),
+                    "significant_at_0.05": w_pval < 0.05,
+                    "significant_at_0.01": w_pval < 0.01,
+                },
+            }
+
+    return statistical_tests
+
+
+def aggregate_multiple_results(
+    all_results: List[Dict],
+    all_comparisons: List[Dict],
+) -> Dict:
+    """
+    Aggregate results from multiple experiments.
+
+    Args:
+        all_results: List of method_results from each iteration
+        all_comparisons: List of comparison dicts from each iteration
+
+    Returns:
+        Dictionary with aggregated results including confidence intervals
+    """
+    # Get all method names
+    all_method_names = set()
+    for results in all_results:
+        all_method_names.update(results.keys())
+
+    # Collect metric values for each method
+    aggregated = {}
+    for method_name in all_method_names:
+        metrics = {
+            "in_group_accuracy": [],
+            "auc_roc": [],
+            "ece": [],
+        }
+
+        for results in all_results:
+            if method_name in results:
+                metrics["in_group_accuracy"].append(results[method_name]["in_group_accuracy"])
+                metrics["auc_roc"].append(results[method_name]["auc_roc"])
+                metrics["ece"].append(results[method_name]["ece"])
+
+        # Compute statistics
+        aggregated[method_name] = {}
+        for metric_name, values in metrics.items():
+            if len(values) > 0:
+                values_arr = np.array(values)
+                mean = np.mean(values_arr)
+                std = np.std(values_arr)
+                n = len(values_arr)
+
+                # 95% confidence interval using t-distribution
+                se = std / np.sqrt(n)
+                ci_95 = stats.t.interval(0.95, n - 1, loc=mean, scale=se)
+
+                aggregated[method_name][metric_name] = {
+                    "mean": float(mean),
+                    "std": float(std),
+                    "median": float(np.median(values_arr)),
+                    "min": float(np.min(values_arr)),
+                    "max": float(np.max(values_arr)),
+                    "ci_95_lower": float(ci_95[0]),
+                    "ci_95_upper": float(ci_95[1]),
+                    "n_iterations": n,
+                }
+
+    # Aggregate rankings (use mean ranks)
+    ranking_keys = ["in_group_accuracy_ranking", "auc_roc_ranking", "ece_ranking"]
+    aggregated_rankings = {}
+
+    for ranking_key in ranking_keys:
+        # Collect ranks for each method across iterations
+        method_ranks = {method: [] for method in all_method_names}
+
+        for comparison in all_comparisons:
+            ranking = comparison[ranking_key]
+            for rank, method in enumerate(ranking):
+                method_ranks[method].append(rank)
+
+        # Compute mean rank and sort
+        mean_ranks = {
+            method: np.mean(ranks) if len(ranks) > 0 else float('inf')
+            for method, ranks in method_ranks.items()
+        }
+        aggregated_rankings[ranking_key] = sorted(mean_ranks.keys(), key=lambda m: mean_ranks[m])
+
+    # Compute statistical tests for top 3 methods in each category
+    statistical_tests = {}
+    test_configs = [
+        ("in_group_accuracy_ranking", "in_group_accuracy", "in_group_accuracy_tests"),
+        ("auc_roc_ranking", "auc_roc", "auc_roc_tests"),
+        ("ece_ranking", "ece", "ece_tests"),
+    ]
+
+    for ranking_key, metric_key, test_name in test_configs:
+        statistical_tests[test_name] = compute_statistical_tests(
+            all_results, ranking_key, metric_key, top_n=3
+        )
+
+    return {
+        "aggregated_metrics": aggregated,
+        "aggregated_rankings": aggregated_rankings,
+        "statistical_tests": statistical_tests,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate CoT results with different confidence aggregation methods"
@@ -342,8 +583,23 @@ def main():
         action="store_true",
         help="Randomly select N chains using random indices instead of taking the first N (maintains correspondence between labels and scores)",
     )
+    parser.add_argument(
+        "--multiple_experiments",
+        action="store_true",
+        help="Run multiple experiments (requires --shuffle) to create confidence intervals and perform statistical tests",
+    )
+    parser.add_argument(
+        "--multiple_iterations",
+        type=int,
+        default=1000,
+        help="Number of iterations when --multiple_experiments is used (default: 1000)",
+    )
 
     args = parser.parse_args()
+
+    # Validate arguments
+    if args.multiple_experiments and not args.shuffle:
+        parser.error("--multiple_experiments requires --shuffle to be enabled")
 
     print(f"Loading CoTs from: {args.cots_path}")
     cots_data = load_json(args.cots_path)
@@ -351,52 +607,64 @@ def main():
     print(f"Loading scores from: {args.scores_path}")
     scores_data = load_json(args.scores_path)
 
-    # Generate random indices if shuffle is requested
-    random_indices = None
-    if args.shuffle:
-        print(f"Generating random indices for selecting {args.n_chains} chains")
-        np.random.seed(42)
-        random_indices = np.random.permutation(
-            max(len(example) for example in cots_data)
-        )[:args.n_chains].tolist()
-        print(f"Selected indices: {random_indices}")
+    # Run evaluation(s)
+    if args.multiple_experiments:
+        print(f"\nRunning {args.multiple_iterations} experiments with shuffling...")
+        all_results = []
+        all_comparisons = []
 
-    print(f"Extracting labels (N={args.n_chains} chains per example)")
-    labels = extract_labels(cots_data, args.n_chains, indices=random_indices)
-    print(f"Labels shape: {labels.shape}")
+        for i in range(args.multiple_iterations):
+            if (i + 1) % 100 == 0:
+                print(f"  Completed {i + 1}/{args.multiple_iterations} iterations")
 
-    print(f"Extracting score arrays")
-    score_arrays = extract_score_arrays(scores_data, args.n_chains, indices=random_indices)
+            # Run evaluation with different seed for each iteration
+            method_results, comparison = run_single_evaluation(
+                cots_data=cots_data,
+                scores_data=scores_data,
+                n_chains=args.n_chains,
+                normalize=args.normalize,
+                shuffle=args.shuffle,
+                seed=i,  # Different seed for each iteration
+            )
 
-    print(f"Creating aggregation methods")
-    confidence_methods = create_aggregation_methods(score_arrays, labels)
-    print(f"Created {len(confidence_methods)} aggregation methods")
+            all_results.append(method_results)
+            all_comparisons.append(comparison)
 
-    # Normalize if requested
-    if args.normalize:
-        print("Normalizing confidence scores")
-        confidence_methods = {
-            name: normalize_confidences(conf)
-            for name, conf in confidence_methods.items()
-        }
+        print(f"\nCompleted all {args.multiple_iterations} iterations")
+        print("Aggregating results and computing statistics...")
 
-    # Evaluate each method
-    print("\nEvaluating methods...")
-    method_results = {}
+        # Aggregate results
+        aggregation = aggregate_multiple_results(all_results, all_comparisons)
 
-    for method_name, confidences in confidence_methods.items():
-        print(f"  Evaluating: {method_name}")
-        try:
-            results = evaluate_confidence_scores(confidences, labels)
-            method_results[method_name] = results
-            print(f"    AUC-ROC: {results['auc_roc']:.4f}, ECE: {results['ece']:.4f}")
-        except Exception as e:
-            print(f"    ERROR: {e}")
-            continue
+        # Use first iteration for detailed results
+        method_results = all_results[0]
+        comparison = all_comparisons[0]
 
-    # Compare methods
-    print("\nComparing methods...")
-    comparison = compare_methods(method_results)
+    else:
+        # Run single evaluation
+        if args.shuffle:
+            print(f"Generating random indices for selecting {args.n_chains} chains")
+
+        print(f"Extracting labels (N={args.n_chains} chains per example)")
+        print(f"Creating aggregation methods")
+        print("\nEvaluating methods...")
+
+        method_results, comparison = run_single_evaluation(
+            cots_data=cots_data,
+            scores_data=scores_data,
+            n_chains=args.n_chains,
+            normalize=args.normalize,
+            shuffle=args.shuffle,
+            seed=42,
+        )
+
+        # Print individual method results
+        for method_name in method_results:
+            results = method_results[method_name]
+            print(f"  {method_name}: AUC-ROC: {results['auc_roc']:.4f}, ECE: {results['ece']:.4f}")
+
+        print("\nComparing methods...")
+        aggregation = None
 
     # Convert numpy types to native Python types for JSON serialization
     def convert_to_serializable(obj):
@@ -425,8 +693,14 @@ def main():
             "scores_path": args.scores_path,
             "normalized": args.normalize,
             "shuffled": args.shuffle,
+            "multiple_experiments": args.multiple_experiments,
+            "multiple_iterations": args.multiple_iterations if args.multiple_experiments else 1,
         },
     }
+
+    # Add aggregation results if multiple experiments were run
+    if aggregation is not None:
+        output["aggregation"] = aggregation
 
     # Convert entire output to serializable format
     output = convert_to_serializable(output)
@@ -439,20 +713,82 @@ def main():
     with open(output_path, "w") as f:
         json.dump(output, f, indent=2)
 
-    print("\nTop 3 methods by in-group accuracies:")
-    for i, method_name in enumerate(comparison["in_group_accuracy_ranking"][:3], 1):
-        in_group_acc = method_results[method_name]["in_group_accuracy"]
-        print(f"  {i}. {method_name}: {in_group_acc:.4f}")
+    # Print results
+    if args.multiple_experiments and aggregation is not None:
+        print("\n" + "=" * 80)
+        print("AGGREGATED RESULTS FROM MULTIPLE EXPERIMENTS")
+        print("=" * 80)
 
-    print("\nTop 3 methods by AUC-ROC:")
-    for i, method_name in enumerate(comparison["auc_roc_ranking"][:3], 1):
-        auc_roc = method_results[method_name]["auc_roc"]
-        print(f"  {i}. {method_name}: {auc_roc:.4f}")
+        # Print top 3 methods with confidence intervals
+        print("\nTop 3 methods by in-group accuracy (with 95% CI):")
+        for i, method_name in enumerate(aggregation["aggregated_rankings"]["in_group_accuracy_ranking"][:3], 1):
+            metrics = aggregation["aggregated_metrics"][method_name]["in_group_accuracy"]
+            print(f"  {i}. {method_name}:")
+            print(f"     Mean: {metrics['mean']:.4f} (95% CI: [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])")
+            print(f"     Std: {metrics['std']:.4f}")
 
-    print("\nTop 3 methods by ECE (lower is better):")
-    for i, method_name in enumerate(comparison["ece_ranking"][:3], 1):
-        ece = method_results[method_name]["ece"]
-        print(f"  {i}. {method_name}: {ece:.4f}")
+        print("\nTop 3 methods by AUC-ROC (with 95% CI):")
+        for i, method_name in enumerate(aggregation["aggregated_rankings"]["auc_roc_ranking"][:3], 1):
+            metrics = aggregation["aggregated_metrics"][method_name]["auc_roc"]
+            print(f"  {i}. {method_name}:")
+            print(f"     Mean: {metrics['mean']:.4f} (95% CI: [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])")
+            print(f"     Std: {metrics['std']:.4f}")
+
+        print("\nTop 3 methods by ECE (lower is better, with 95% CI):")
+        for i, method_name in enumerate(aggregation["aggregated_rankings"]["ece_ranking"][:3], 1):
+            metrics = aggregation["aggregated_metrics"][method_name]["ece"]
+            print(f"  {i}. {method_name}:")
+            print(f"     Mean: {metrics['mean']:.4f} (95% CI: [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])")
+            print(f"     Std: {metrics['std']:.4f}")
+
+        # Print statistical test results
+        print("\n" + "=" * 80)
+        print("STATISTICAL TESTS (Comparing Top 3 Methods)")
+        print("=" * 80)
+
+        test_categories = [
+            ("in_group_accuracy_tests", "In-Group Accuracy"),
+            ("auc_roc_tests", "AUC-ROC"),
+            ("ece_tests", "ECE"),
+        ]
+
+        for test_key, test_name in test_categories:
+            tests = aggregation["statistical_tests"][test_key]
+            if tests:
+                print(f"\n{test_name}:")
+                for comparison_key, test_results in tests.items():
+                    method_a = test_results["method_a"]
+                    method_b = test_results["method_b"]
+                    mean_diff = test_results["mean_diff"]
+                    t_pval = test_results["paired_t_test"]["p_value"]
+                    w_pval = test_results["wilcoxon_test"]["p_value"]
+
+                    print(f"\n  {method_a} vs {method_b}:")
+                    print(f"    Mean difference: {mean_diff:.4f}")
+                    print(f"    Paired t-test: p={t_pval:.4f} {'***' if t_pval < 0.001 else '**' if t_pval < 0.01 else '*' if t_pval < 0.05 else 'n.s.'}")
+                    print(f"    Wilcoxon test: p={w_pval:.4f} {'***' if w_pval < 0.001 else '**' if w_pval < 0.01 else '*' if w_pval < 0.05 else 'n.s.'}")
+
+                    if t_pval < 0.05:
+                        direction = "better" if mean_diff > 0 else "worse"
+                        print(f"    Result: {method_a} is significantly {direction} than {method_b}")
+                    else:
+                        print(f"    Result: No significant difference")
+
+    else:
+        print("\nTop 3 methods by in-group accuracy:")
+        for i, method_name in enumerate(comparison["in_group_accuracy_ranking"][:3], 1):
+            in_group_acc = method_results[method_name]["in_group_accuracy"]
+            print(f"  {i}. {method_name}: {in_group_acc:.4f}")
+
+        print("\nTop 3 methods by AUC-ROC:")
+        for i, method_name in enumerate(comparison["auc_roc_ranking"][:3], 1):
+            auc_roc = method_results[method_name]["auc_roc"]
+            print(f"  {i}. {method_name}: {auc_roc:.4f}")
+
+        print("\nTop 3 methods by ECE (lower is better):")
+        for i, method_name in enumerate(comparison["ece_ranking"][:3], 1):
+            ece = method_results[method_name]["ece"]
+            print(f"  {i}. {method_name}: {ece:.4f}")
 
     print("\nDone!")
 
