@@ -21,7 +21,7 @@ from src.evaluation.metrics import evaluate_confidence_scores, compare_methods
 
 def load_json(file_path: str) -> List:
     """Load JSON file."""
-    with open(file_path, 'r') as f:
+    with open(file_path, "r") as f:
         return json.load(f)
 
 
@@ -42,7 +42,7 @@ def extract_labels(cots_data: List[List[Dict]], n_chains: int) -> np.ndarray:
         example_labels = []
         for i, chain in enumerate(example_chains[:n_chains]):
             # Map True -> 1, False -> 0
-            label = 1 if chain.get("correct", False) else 0
+            label = 1 if chain["metadata"].get("correct", False) else 0
             example_labels.append(label)
 
         # Pad if needed
@@ -54,7 +54,9 @@ def extract_labels(cots_data: List[List[Dict]], n_chains: int) -> np.ndarray:
     return np.array(labels)
 
 
-def extract_score_arrays(scores_data: List[List[Dict]], n_chains: int) -> Dict[str, np.ndarray]:
+def extract_score_arrays(
+    scores_data: List[List[Dict]], n_chains: int
+) -> Dict[str, np.ndarray]:
     """
     Extract various score arrays from the scores data.
 
@@ -66,40 +68,38 @@ def extract_score_arrays(scores_data: List[List[Dict]], n_chains: int) -> Dict[s
         Dictionary mapping score names to numpy arrays of shape (num_examples, n_chains)
     """
     score_arrays = {
-        'internal_overall': [],
-        'internal_smoothness': [],
-        'internal_goal_directedness': [],
-        'internal_semantic_density': [],
-        'cross_modal_alignment': [],
-        'cross_modal_min_coherence': [],
-        'confidence': [],
+        "internal_overall": [],
+        "internal_smoothness": [],
+        "internal_goal_directedness": [],
+        "internal_semantic_density": [],
+        "cross_modal_alignment": [],
+        "cross_modal_min_coherence": [],
+        "confidence": [],
     }
 
     for example_scores in scores_data:
         example_dict = {key: [] for key in score_arrays.keys()}
 
         for i, score_dict in enumerate(example_scores[:n_chains]):
-            example_dict['internal_overall'].append(
-                score_dict.get('internal', {}).get('overall', 0.0)
+            example_dict["internal_overall"].append(
+                score_dict.get("internal", {}).get("overall", 0.0)
             )
-            example_dict['internal_smoothness'].append(
-                score_dict.get('internal', {}).get('smoothness', 0.0)
+            example_dict["internal_smoothness"].append(
+                score_dict.get("internal", {}).get("smoothness", 0.0)
             )
-            example_dict['internal_goal_directedness'].append(
-                score_dict.get('internal', {}).get('goal_directedness', 0.0)
+            example_dict["internal_goal_directedness"].append(
+                score_dict.get("internal", {}).get("goal_directedness", 0.0)
             )
-            example_dict['internal_semantic_density'].append(
-                score_dict.get('internal', {}).get('semantic_density', 0.0)
+            example_dict["internal_semantic_density"].append(
+                score_dict.get("internal", {}).get("semantic_density", 0.0)
             )
-            example_dict['cross_modal_alignment'].append(
-                score_dict.get('cross_modal', {}).get('alignment', 0.0)
+            example_dict["cross_modal_alignment"].append(
+                score_dict.get("cross_modal", {}).get("alignment", 0.0)
             )
-            example_dict['cross_modal_min_coherence'].append(
-                score_dict.get('cross_modal', {}).get('min_step_coherence', 0.0)
+            example_dict["cross_modal_min_coherence"].append(
+                score_dict.get("cross_modal", {}).get("min_step_coherence", 0.0)
             )
-            example_dict['confidence'].append(
-                score_dict.get('confidence', 0.0)
-            )
+            example_dict["confidence"].append(score_dict.get("confidence", 0.0))
 
         # Pad if needed
         for key in example_dict:
@@ -114,7 +114,9 @@ def extract_score_arrays(scores_data: List[List[Dict]], n_chains: int) -> Dict[s
     return {key: np.array(val) for key, val in score_arrays.items()}
 
 
-def create_aggregation_methods(score_arrays: Dict[str, np.ndarray], labels: np.ndarray) -> Dict[str, np.ndarray]:
+def create_aggregation_methods(
+    score_arrays: Dict[str, np.ndarray], labels: np.ndarray
+) -> Dict[str, np.ndarray]:
     """
     Create various confidence aggregation methods.
 
@@ -132,100 +134,106 @@ def create_aggregation_methods(score_arrays: Dict[str, np.ndarray], labels: np.n
     # Incorrect chains get score = 1 - percentage of correct chains
     # This way, argmax will select correct chains when they're in the majority
     majority_vote_scores = np.mean(labels, axis=1, keepdims=True)  # (num_examples, 1)
-    methods['majority_vote'] = np.where(
+    methods["majority_vote"] = np.where(
         labels == 1,
         majority_vote_scores,  # Correct chains get percentage of correct
-        1 - majority_vote_scores  # Incorrect chains get 1 - percentage of correct
+        1 - majority_vote_scores,  # Incorrect chains get 1 - percentage of correct
     )
 
     # Individual raw scores
-    methods['raw_confidence'] = score_arrays['confidence']
-    methods['internal_overall'] = score_arrays['internal_overall']
-    methods['internal_smoothness'] = score_arrays['internal_smoothness']
-    methods['internal_goal_directedness'] = score_arrays['internal_goal_directedness']
-    methods['internal_semantic_density'] = score_arrays['internal_semantic_density']
-    methods['cross_modal_alignment'] = score_arrays['cross_modal_alignment']
-    methods['cross_modal_min_coherence'] = score_arrays['cross_modal_min_coherence']
+    methods["raw_confidence"] = score_arrays["confidence"]
+    methods["internal_overall"] = score_arrays["internal_overall"]
+    methods["internal_smoothness"] = score_arrays["internal_smoothness"]
+    methods["internal_goal_directedness"] = score_arrays["internal_goal_directedness"]
+    methods["internal_semantic_density"] = score_arrays["internal_semantic_density"]
+    methods["cross_modal_alignment"] = score_arrays["cross_modal_alignment"]
+    methods["cross_modal_min_coherence"] = score_arrays["cross_modal_min_coherence"]
 
     # Mean of all internal scores
-    methods['mean_internal'] = np.mean([
-        score_arrays['internal_overall'],
-        score_arrays['internal_smoothness'],
-        score_arrays['internal_goal_directedness'],
-        score_arrays['internal_semantic_density']
-    ], axis=0)
+    methods["mean_internal"] = np.mean(
+        [
+            score_arrays["internal_overall"],
+            score_arrays["internal_smoothness"],
+            score_arrays["internal_goal_directedness"],
+            score_arrays["internal_semantic_density"],
+        ],
+        axis=0,
+    )
 
     # Mean of all cross-modal scores
-    methods['mean_cross_modal'] = np.mean([
-        score_arrays['cross_modal_alignment'],
-        score_arrays['cross_modal_min_coherence']
-    ], axis=0)
+    methods["mean_cross_modal"] = np.mean(
+        [
+            score_arrays["cross_modal_alignment"],
+            score_arrays["cross_modal_min_coherence"],
+        ],
+        axis=0,
+    )
 
     # Mean of all scores (internal + cross-modal)
-    methods['mean_all'] = np.mean([
-        score_arrays['internal_overall'],
-        score_arrays['internal_smoothness'],
-        score_arrays['internal_goal_directedness'],
-        score_arrays['internal_semantic_density'],
-        score_arrays['cross_modal_alignment'],
-        score_arrays['cross_modal_min_coherence']
-    ], axis=0)
+    methods["mean_all"] = np.mean(
+        [
+            score_arrays["internal_overall"],
+            score_arrays["internal_smoothness"],
+            score_arrays["internal_goal_directedness"],
+            score_arrays["internal_semantic_density"],
+            score_arrays["cross_modal_alignment"],
+            score_arrays["cross_modal_min_coherence"],
+        ],
+        axis=0,
+    )
 
     # Product of internal and cross-modal (geometric mean-like)
-    methods['product_internal_crossmodal'] = (
-        score_arrays['internal_overall'] *
-        score_arrays['cross_modal_alignment']
+    methods["product_internal_crossmodal"] = (
+        score_arrays["internal_overall"] * score_arrays["cross_modal_alignment"]
     )
 
     # Weighted sum: 70% internal, 30% cross-modal
-    methods['weighted_70_30'] = (
-        0.7 * score_arrays['internal_overall'] +
-        0.3 * score_arrays['cross_modal_alignment']
+    methods["weighted_70_30"] = (
+        0.7 * score_arrays["internal_overall"]
+        + 0.3 * score_arrays["cross_modal_alignment"]
     )
 
     # Weighted sum: 50% internal, 50% cross-modal
-    methods['weighted_50_50'] = (
-        0.5 * score_arrays['internal_overall'] +
-        0.5 * score_arrays['cross_modal_alignment']
+    methods["weighted_50_50"] = (
+        0.5 * score_arrays["internal_overall"]
+        + 0.5 * score_arrays["cross_modal_alignment"]
     )
 
     # Weighted sum: 80% internal, 20% cross-modal
-    methods['weighted_80_20'] = (
-        0.8 * score_arrays['internal_overall'] +
-        0.2 * score_arrays['cross_modal_alignment']
+    methods["weighted_80_20"] = (
+        0.8 * score_arrays["internal_overall"]
+        + 0.2 * score_arrays["cross_modal_alignment"]
     )
 
     # Max of internal and cross-modal
-    methods['max_internal_crossmodal'] = np.maximum(
-        score_arrays['internal_overall'],
-        score_arrays['cross_modal_alignment']
+    methods["max_internal_crossmodal"] = np.maximum(
+        score_arrays["internal_overall"], score_arrays["cross_modal_alignment"]
     )
 
     # Min of internal and cross-modal (conservative)
-    methods['min_internal_crossmodal'] = np.minimum(
-        score_arrays['internal_overall'],
-        score_arrays['cross_modal_alignment']
+    methods["min_internal_crossmodal"] = np.minimum(
+        score_arrays["internal_overall"], score_arrays["cross_modal_alignment"]
     )
 
     # Weighted combination emphasizing goal directedness
-    methods['goal_directedness_focus'] = (
-        0.6 * score_arrays['internal_goal_directedness'] +
-        0.3 * score_arrays['internal_smoothness'] +
-        0.1 * score_arrays['cross_modal_alignment']
+    methods["goal_directedness_focus"] = (
+        0.6 * score_arrays["internal_goal_directedness"]
+        + 0.3 * score_arrays["internal_smoothness"]
+        + 0.1 * score_arrays["cross_modal_alignment"]
     )
 
     # Weighted combination emphasizing smoothness
-    methods['smoothness_focus'] = (
-        0.6 * score_arrays['internal_smoothness'] +
-        0.3 * score_arrays['internal_goal_directedness'] +
-        0.1 * score_arrays['cross_modal_alignment']
+    methods["smoothness_focus"] = (
+        0.6 * score_arrays["internal_smoothness"]
+        + 0.3 * score_arrays["internal_goal_directedness"]
+        + 0.1 * score_arrays["cross_modal_alignment"]
     )
 
     # Harmonic mean of internal and cross-modal
     epsilon = 1e-8
-    methods['harmonic_mean'] = 2 / (
-        1 / (score_arrays['internal_overall'] + epsilon) +
-        1 / (score_arrays['cross_modal_alignment'] + epsilon)
+    methods["harmonic_mean"] = 2 / (
+        1 / (score_arrays["internal_overall"] + epsilon)
+        + 1 / (score_arrays["cross_modal_alignment"] + epsilon)
     )
 
     return methods
@@ -252,36 +260,33 @@ def normalize_confidences(confidences: np.ndarray) -> np.ndarray:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Evaluate CoT results with different confidence aggregation methods'
+        description="Evaluate CoT results with different confidence aggregation methods"
     )
     parser.add_argument(
-        '--cots_path',
+        "--cots_path",
         type=str,
         required=True,
-        help='Path to the CoTs JSON file (List of List of dictionaries)'
+        help="Path to the CoTs JSON file (List of List of dictionaries)",
     )
     parser.add_argument(
-        '--scores_path',
-        type=str,
-        required=True,
-        help='Path to the scores JSON file'
+        "--scores_path", type=str, required=True, help="Path to the scores JSON file"
     )
     parser.add_argument(
-        '--n_chains',
+        "--n_chains",
         type=int,
         required=True,
-        help='Number of chains to analyze per example'
+        help="Number of chains to analyze per example",
     )
     parser.add_argument(
-        '--output_file',
+        "--output_file",
         type=str,
         required=True,
-        help='Path to save the final JSON results'
+        help="Path to save the final JSON results",
     )
     parser.add_argument(
-        '--normalize',
-        action='store_true',
-        help='Normalize confidence scores to [0, 1] range'
+        "--normalize",
+        action="store_true",
+        help="Normalize confidence scores to [0, 1] range",
     )
 
     args = parser.parse_args()
@@ -347,15 +352,15 @@ def main():
 
     # Prepare output
     output = {
-        'method_results': method_results,
-        'comparison': comparison,
-        'metadata': {
-            'n_chains': args.n_chains,
-            'n_examples': len(cots_data),
-            'cots_path': args.cots_path,
-            'scores_path': args.scores_path,
-            'normalized': args.normalize
-        }
+        "method_results": method_results,
+        "comparison": comparison,
+        "metadata": {
+            "n_chains": args.n_chains,
+            "n_examples": len(cots_data),
+            "cots_path": args.cots_path,
+            "scores_path": args.scores_path,
+            "normalized": args.normalize,
+        },
     }
 
     # Convert entire output to serializable format
@@ -366,17 +371,17 @@ def main():
     output_path = Path(args.output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         json.dump(output, f, indent=2)
 
     print("\nTop 3 methods by AUC-ROC:")
-    for i, method_name in enumerate(comparison['auc_roc_ranking'][:3], 1):
-        auc_roc = method_results[method_name]['auc_roc']
+    for i, method_name in enumerate(comparison["auc_roc_ranking"][:3], 1):
+        auc_roc = method_results[method_name]["auc_roc"]
         print(f"  {i}. {method_name}: {auc_roc:.4f}")
 
     print("\nTop 3 methods by ECE (lower is better):")
-    for i, method_name in enumerate(comparison['ece_ranking'][:3], 1):
-        ece = method_results[method_name]['ece']
+    for i, method_name in enumerate(comparison["ece_ranking"][:3], 1):
+        ece = method_results[method_name]["ece"]
         print(f"  {i}. {method_name}: {ece:.4f}")
 
     print("\nDone!")
