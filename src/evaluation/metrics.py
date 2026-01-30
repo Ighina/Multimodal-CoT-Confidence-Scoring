@@ -52,7 +52,7 @@ def compute_accuracy_in_groups(
     predictions = []
     for group, label in zip(confidences, labels):
         assert len(group) == len(label), "Confidence and label group sizes must match."
-        predictions.append(np.argmax(group))
+        predictions.append(label[np.argmax(group)])
 
     return np.mean(predictions)
 
