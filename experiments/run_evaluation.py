@@ -329,10 +329,26 @@ def main():
     print("\nComparing methods...")
     comparison = compare_methods(method_results)
 
+    # Convert numpy types to native Python types for JSON serialization
+    def convert_to_serializable(obj):
+        """Recursively convert numpy types to native Python types."""
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, dict):
+            return {key: convert_to_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(item) for item in obj]
+        else:
+            return obj
+
     # Prepare output
     output = {
         'method_results': {},
-        'comparison': comparison,
+        'comparison': convert_to_serializable(comparison),
         'metadata': {
             'n_chains': args.n_chains,
             'n_examples': len(cots_data),
