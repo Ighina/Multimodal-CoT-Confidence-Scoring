@@ -9,14 +9,55 @@ from sklearn.metrics import (
     roc_auc_score,
     average_precision_score,
     roc_curve,
-    precision_recall_curve
+    precision_recall_curve,
 )
 
 
-def compute_auc_roc(
-    confidences: np.ndarray,
-    labels: np.ndarray
-) -> float:
+def compute_confusion_matrix_from_threshold(
+    confidences: np.ndarray, labels: np.ndarray, threshold: float = 0.5
+) -> np.ndarray:
+    """
+    Compute confusion matrix at a given confidence threshold.
+
+    Args:
+        confidences: Confidence scores (N,)
+        labels: Binary labels (N,)
+        threshold: Confidence threshold for positive prediction
+
+    Returns:
+        Confusion matrix (TN, FP, FN, TP)
+    """
+    predictions = (confidences >= threshold).astype(int)
+    tn = ((predictions == 0) & (labels == 0)).sum()
+    fp = ((predictions == 1) & (labels == 0)).sum()
+    fn = ((predictions == 0) & (labels == 1)).sum()
+    tp = ((predictions == 1) & (labels == 1)).sum()
+    return np.array([tn, fp, fn, tp])
+
+
+def compute_accuracy_in_groups(
+    confidences: np.ndarray, labels: np.ndarray
+) -> List[Tuple[float, float]]:
+    """
+    Compute accuracy in confidence score groups.
+
+    Args:
+        confidences: Confidence scores (N, n_groups)
+        labels: Binary labels (N, M)
+
+    Returns:
+        List of (group_accuracy, group_confidence) tuples
+    """
+    # Bin the confidence scores
+    predictions = []
+    for group, label in zip(confidences, labels):
+        assert len(group) == len(label), "Confidence and label group sizes must match."
+        predictions.append(np.argmax(group))
+
+    return np.mean(predictions)
+
+
+def compute_auc_roc(confidences: np.ndarray, labels: np.ndarray) -> float:
     """
     Compute Area Under ROC Curve.
 
@@ -30,10 +71,7 @@ def compute_auc_roc(
     return roc_auc_score(labels, confidences)
 
 
-def compute_auc_pr(
-    confidences: np.ndarray,
-    labels: np.ndarray
-) -> float:
+def compute_auc_pr(confidences: np.ndarray, labels: np.ndarray) -> float:
     """
     Compute Area Under Precision-Recall Curve.
 
@@ -51,7 +89,7 @@ def compute_calibration_error(
     confidences: np.ndarray,
     labels: np.ndarray,
     n_bins: int = 10,
-    strategy: str = 'uniform'
+    strategy: str = "uniform",
 ) -> Dict[str, float]:
     """
     Compute calibration error metrics.
@@ -66,7 +104,7 @@ def compute_calibration_error(
         Dictionary with ECE, MCE, and calibration data
     """
     # Create bins
-    if strategy == 'uniform':
+    if strategy == "uniform":
         bin_boundaries = np.linspace(0, 1, n_bins + 1)
         bin_lowers = bin_boundaries[:-1]
         bin_uppers = bin_boundaries[1:]
@@ -102,27 +140,21 @@ def compute_calibration_error(
             # Update MCE (max error)
             mce = max(mce, bin_error)
 
-            bin_data.append({
-                'bin_lower': bin_lower,
-                'bin_upper': bin_upper,
-                'accuracy': accuracy_in_bin,
-                'confidence': avg_confidence_in_bin,
-                'count': in_bin.sum(),
-                'error': bin_error
-            })
+            bin_data.append(
+                {
+                    "bin_lower": bin_lower,
+                    "bin_upper": bin_upper,
+                    "accuracy": accuracy_in_bin,
+                    "confidence": avg_confidence_in_bin,
+                    "count": in_bin.sum(),
+                    "error": bin_error,
+                }
+            )
 
-    return {
-        'ece': ece,
-        'mce': mce,
-        'bin_data': bin_data
-    }
+    return {"ece": ece, "mce": mce, "bin_data": bin_data}
 
 
-def compute_ece(
-    confidences: np.ndarray,
-    labels: np.ndarray,
-    n_bins: int = 10
-) -> float:
+def compute_ece(confidences: np.ndarray, labels: np.ndarray, n_bins: int = 10) -> float:
     """
     Compute Expected Calibration Error.
 
@@ -135,13 +167,13 @@ def compute_ece(
         ECE score
     """
     result = compute_calibration_error(confidences, labels, n_bins)
-    return result['ece']
+    return result["ece"]
 
 
 def compute_risk_coverage(
     confidences: np.ndarray,
     labels: np.ndarray,
-    thresholds: Optional[List[float]] = None
+    thresholds: Optional[List[float]] = None,
 ) -> Dict:
     """
     Compute risk-coverage curve for selective prediction.
@@ -187,17 +219,15 @@ def compute_risk_coverage(
         auc = 0.0
 
     return {
-        'thresholds': thresholds,
-        'risks': risks,
-        'coverages': coverages,
-        'auc': auc
+        "thresholds": thresholds,
+        "risks": risks,
+        "coverages": coverages,
+        "auc": auc,
     }
 
 
 def compute_abstention_metrics(
-    confidences: np.ndarray,
-    labels: np.ndarray,
-    threshold: float
+    confidences: np.ndarray, labels: np.ndarray, threshold: float
 ) -> Dict:
     """
     Compute metrics for abstention at a specific threshold.
@@ -222,20 +252,17 @@ def compute_abstention_metrics(
     accuracy_overall = labels[answered].sum() / len(labels)
 
     return {
-        'threshold': threshold,
-        'coverage': coverage,
-        'accuracy_on_answered': accuracy_on_answered,
-        'accuracy_on_abstained': accuracy_on_abstained,
-        'accuracy_overall': accuracy_overall,
-        'num_answered': answered.sum(),
-        'num_abstained': (~answered).sum()
+        "threshold": threshold,
+        "coverage": coverage,
+        "accuracy_on_answered": accuracy_on_answered,
+        "accuracy_on_abstained": accuracy_on_abstained,
+        "accuracy_overall": accuracy_overall,
+        "num_answered": answered.sum(),
+        "num_abstained": (~answered).sum(),
     }
 
 
-def compute_correlation_metrics(
-    confidences: np.ndarray,
-    labels: np.ndarray
-) -> Dict:
+def compute_correlation_metrics(confidences: np.ndarray, labels: np.ndarray) -> Dict:
     """
     Compute correlation between confidence and correctness.
 
@@ -255,10 +282,10 @@ def compute_correlation_metrics(
     spearman_corr, spearman_p = spearmanr(confidences, labels)
 
     return {
-        'pearson_r': pearson_corr,
-        'pearson_p': pearson_p,
-        'spearman_r': spearman_corr,
-        'spearman_p': spearman_p
+        "pearson_r": pearson_corr,
+        "pearson_p": pearson_p,
+        "spearman_r": spearman_corr,
+        "spearman_p": spearman_p,
     }
 
 
@@ -266,14 +293,14 @@ def evaluate_confidence_scores(
     confidences: np.ndarray,
     labels: np.ndarray,
     n_bins: int = 10,
-    abstention_thresholds: Optional[List[float]] = None
+    abstention_thresholds: Optional[List[float]] = None,
 ) -> Dict:
     """
     Comprehensive evaluation of confidence scores.
 
     Args:
-        confidences: Confidence scores (N,)
-        labels: Binary labels (N,)
+        confidences: Confidence scores (N,M)
+        labels: Binary labels (N,M)
         n_bins: Number of calibration bins
         abstention_thresholds: Thresholds for abstention analysis
 
@@ -282,19 +309,31 @@ def evaluate_confidence_scores(
     """
     results = {}
 
+    # In-group Accuracy
+    results["in_group_accuracy"] = compute_accuracy_in_groups(confidences, labels)
+
+    # Flatten confidences and labels for other metrics
+    confidences = confidences.flatten()
+    labels = labels.flatten()
+
+    # Confusion matrix at default threshold 0.5
+    results["confusion_matrix"] = compute_confusion_matrix_from_threshold(
+        confidences, labels
+    )
+
     # AUC metrics
-    results['auc_roc'] = compute_auc_roc(confidences, labels)
-    results['auc_pr'] = compute_auc_pr(confidences, labels)
+    results["auc_roc"] = compute_auc_roc(confidences, labels)
+    results["auc_pr"] = compute_auc_pr(confidences, labels)
 
     # Calibration
     calibration = compute_calibration_error(confidences, labels, n_bins)
-    results['ece'] = calibration['ece']
-    results['mce'] = calibration['mce']
-    results['calibration_bins'] = calibration['bin_data']
+    results["ece"] = calibration["ece"]
+    results["mce"] = calibration["mce"]
+    results["calibration_bins"] = calibration["bin_data"]
 
     # Risk-coverage
     risk_coverage = compute_risk_coverage(confidences, labels)
-    results['risk_coverage'] = risk_coverage
+    results["risk_coverage"] = risk_coverage
 
     # Abstention metrics
     if abstention_thresholds is None:
@@ -304,23 +343,21 @@ def evaluate_confidence_scores(
     for threshold in abstention_thresholds:
         abstention = compute_abstention_metrics(confidences, labels, threshold)
         abstention_results.append(abstention)
-    results['abstention'] = abstention_results
+    results["abstention"] = abstention_results
 
     # Correlation
     correlation = compute_correlation_metrics(confidences, labels)
-    results['correlation'] = correlation
+    results["correlation"] = correlation
 
     # Summary statistics
-    results['mean_confidence'] = confidences.mean()
-    results['std_confidence'] = confidences.std()
-    results['mean_accuracy'] = labels.mean()
+    results["mean_confidence"] = confidences.mean()
+    results["std_confidence"] = confidences.std()
+    results["mean_accuracy"] = labels.mean()
 
     return results
 
 
-def compare_methods(
-    method_results: Dict[str, Dict]
-) -> Dict:
+def compare_methods(method_results: Dict[str, Dict]) -> Dict:
     """
     Compare multiple confidence estimation methods.
 
@@ -333,24 +370,25 @@ def compare_methods(
     comparison = {}
 
     # Compare key metrics
-    metrics_to_compare = ['auc_roc', 'auc_pr', 'ece', 'mce']
+    metrics_to_compare = ["auc_roc", "auc_pr", "ece", "mce"]
 
     for metric in metrics_to_compare:
         comparison[metric] = {
-            name: results.get(metric, None)
-            for name, results in method_results.items()
+            name: results.get(metric, None) for name, results in method_results.items()
         }
 
         # Rank methods
-        values = [(name, val) for name, val in comparison[metric].items() if val is not None]
+        values = [
+            (name, val) for name, val in comparison[metric].items() if val is not None
+        ]
 
-        if metric in ['ece', 'mce']:
+        if metric in ["ece", "mce"]:
             # Lower is better
             values.sort(key=lambda x: x[1])
         else:
             # Higher is better
             values.sort(key=lambda x: x[1], reverse=True)
 
-        comparison[f'{metric}_ranking'] = [name for name, _ in values]
+        comparison[f"{metric}_ranking"] = [name for name, _ in values]
 
     return comparison
