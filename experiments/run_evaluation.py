@@ -374,6 +374,11 @@ def main():
     with open(output_path, "w") as f:
         json.dump(output, f, indent=2)
 
+    print("\nTop 3 methods by in-group accuracies:")
+    for i, method_name in enumerate(comparison["in_group_accuracy_ranking"][:3], 1):
+        in_group_acc = method_results[method_name]["in_group_accuracy"]
+        print(f"  {i}. {method_name}: {in_group_acc:.4f}")
+
     print("\nTop 3 methods by AUC-ROC:")
     for i, method_name in enumerate(comparison["auc_roc_ranking"][:3], 1):
         auc_roc = method_results[method_name]["auc_roc"]

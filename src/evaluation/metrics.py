@@ -370,7 +370,7 @@ def compare_methods(method_results: Dict[str, Dict]) -> Dict:
     comparison = {}
 
     # Compare key metrics
-    metrics_to_compare = ["auc_roc", "auc_pr", "ece", "mce"]
+    metrics_to_compare = ["auc_roc", "auc_pr", "ece", "mce", "in_group_accuracy"]
 
     for metric in metrics_to_compare:
         comparison[metric] = {
