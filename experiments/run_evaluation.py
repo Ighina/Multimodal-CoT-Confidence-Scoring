@@ -25,13 +25,14 @@ def load_json(file_path: str) -> List:
         return json.load(f)
 
 
-def extract_labels(cots_data: List[List[Dict]], n_chains: int) -> np.ndarray:
+def extract_labels(cots_data: List[List[Dict]], n_chains: int, indices: List[int] = None) -> np.ndarray:
     """
     Extract labels from CoTs data.
 
     Args:
         cots_data: List of lists of dictionaries with "correct" key
         n_chains: Number of chains to consider per example
+        indices: Optional list of indices to select specific chains. If None, selects first n_chains.
 
     Returns:
         numpy array of shape (num_examples, n_chains) with binary labels
@@ -40,9 +41,16 @@ def extract_labels(cots_data: List[List[Dict]], n_chains: int) -> np.ndarray:
 
     for example_chains in cots_data:
         example_labels = []
-        for i, chain in enumerate(example_chains[:n_chains]):
+
+        # Use provided indices or default to first n_chains
+        if indices is not None:
+            selected_indices = [idx for idx in indices if idx < len(example_chains)]
+        else:
+            selected_indices = list(range(min(n_chains, len(example_chains))))
+
+        for idx in selected_indices:
             # Map True -> 1, False -> 0
-            label = 1 if chain["metadata"].get("correct", False) else 0
+            label = 1 if example_chains[idx]["metadata"].get("correct", False) else 0
             example_labels.append(label)
 
         # Pad if needed
@@ -55,7 +63,7 @@ def extract_labels(cots_data: List[List[Dict]], n_chains: int) -> np.ndarray:
 
 
 def extract_score_arrays(
-    scores_data: List[List[Dict]], n_chains: int
+    scores_data: List[List[Dict]], n_chains: int, indices: List[int] = None
 ) -> Dict[str, np.ndarray]:
     """
     Extract various score arrays from the scores data.
@@ -63,6 +71,7 @@ def extract_score_arrays(
     Args:
         scores_data: List of lists of score dictionaries
         n_chains: Number of chains to consider per example
+        indices: Optional list of indices to select specific chains. If None, selects first n_chains.
 
     Returns:
         Dictionary mapping score names to numpy arrays of shape (num_examples, n_chains)
@@ -80,7 +89,14 @@ def extract_score_arrays(
     for example_scores in scores_data:
         example_dict = {key: [] for key in score_arrays.keys()}
 
-        for i, score_dict in enumerate(example_scores[:n_chains]):
+        # Use provided indices or default to first n_chains
+        if indices is not None:
+            selected_indices = [idx for idx in indices if idx < len(example_scores)]
+        else:
+            selected_indices = list(range(min(n_chains, len(example_scores))))
+
+        for idx in selected_indices:
+            score_dict = example_scores[idx]
             example_dict["internal_overall"].append(
                 score_dict.get("internal", {}).get("overall", 0.0)
             )
@@ -324,7 +340,7 @@ def main():
     parser.add_argument(
         "--shuffle",
         action="store_true",
-        help="Randomly shuffle labels and scores within each group (maintains correspondence)",
+        help="Randomly select N chains using random indices instead of taking the first N (maintains correspondence between labels and scores)",
     )
 
     args = parser.parse_args()
@@ -335,17 +351,22 @@ def main():
     print(f"Loading scores from: {args.scores_path}")
     scores_data = load_json(args.scores_path)
 
+    # Generate random indices if shuffle is requested
+    random_indices = None
+    if args.shuffle:
+        print(f"Generating random indices for selecting {args.n_chains} chains")
+        np.random.seed(42)
+        random_indices = np.random.permutation(
+            max(len(example) for example in cots_data)
+        )[:args.n_chains].tolist()
+        print(f"Selected indices: {random_indices}")
+
     print(f"Extracting labels (N={args.n_chains} chains per example)")
-    labels = extract_labels(cots_data, args.n_chains)
+    labels = extract_labels(cots_data, args.n_chains, indices=random_indices)
     print(f"Labels shape: {labels.shape}")
 
     print(f"Extracting score arrays")
-    score_arrays = extract_score_arrays(scores_data, args.n_chains)
-
-    # Shuffle if requested
-    if args.shuffle:
-        print("Shuffling labels and scores within each group")
-        labels, score_arrays = shuffle_data(labels, score_arrays)
+    score_arrays = extract_score_arrays(scores_data, args.n_chains, indices=random_indices)
 
     print(f"Creating aggregation methods")
     confidence_methods = create_aggregation_methods(score_arrays, labels)
