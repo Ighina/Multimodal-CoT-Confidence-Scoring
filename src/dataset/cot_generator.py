@@ -1,4 +1,6 @@
 import re
+import base64
+import io
 from typing import List, Optional, Dict, Any, Union
 from dataclasses import dataclass
 from PIL import Image
@@ -6,6 +8,13 @@ from vllm import LLM, SamplingParams
 
 # Import multimodal model formatter
 from .multimodal_models import format_multimodal_prompt
+
+# Try to import OpenAI (optional dependency)
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 
 
 @dataclass
@@ -545,6 +554,503 @@ class CoTGenerator:
             "prefix_caching_enabled": self.enable_prefix_caching,
             "gpu_memory_utilization": self.gpu_memory_utilization,
             "vocab_size": len(self.tokenizer) if self.tokenizer else None,
+        }
+
+
+class OpenAICoTGenerator:
+    """
+    Generate Chain-of-Thought reasoning using OpenAI API.
+
+    Supports multimodal models (GPT-4o, GPT-4o-mini, GPT-4 Turbo) with
+    vision and audio capabilities (where available).
+    """
+
+    def __init__(
+        self,
+        model_name: str = "gpt-4o",
+        api_key: Optional[str] = None,
+        cot_prompt_template: Optional[str] = None,
+        batch_size: int = 10,
+        max_retries: int = 3,
+        timeout: float = 60.0,
+    ):
+        """
+        Initialize OpenAI CoT generator.
+
+        Args:
+            model_name: OpenAI model name (e.g., "gpt-4o", "gpt-4o-mini", "gpt-4-turbo")
+            api_key: OpenAI API key (if None, will use OPENAI_API_KEY env variable)
+            cot_prompt_template: Template for CoT prompting
+            batch_size: Number of requests to process in parallel (for rate limiting)
+            max_retries: Maximum number of retries for failed requests
+            timeout: Request timeout in seconds
+        """
+        if not OPENAI_AVAILABLE:
+            raise ImportError(
+                "OpenAI package not installed. Install with: pip install openai"
+            )
+
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self.max_retries = max_retries
+        self.timeout = timeout
+
+        # Default CoT prompt template
+        self.cot_prompt_template = cot_prompt_template or (
+            "{question}\n"
+            "Let's solve this step by step, showing clear reasoning.\n"
+            "answer one of the following options: A, B, C, D.\n"
+        )
+
+        # Initialize OpenAI client
+        self.client = OpenAI(api_key=api_key)
+
+        # Validate model supports multimodal
+        self._validate_model()
+
+        print(f"Initialized OpenAI CoT Generator with model: {self.model_name}")
+
+    def _validate_model(self):
+        """Validate that the model supports required features."""
+        # Models that support vision
+        vision_models = [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "gpt-4-turbo-2024-04-09",
+            "gpt-4-vision-preview",
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano"
+        ]
+
+        # Models that support audio (currently limited)
+        audio_models = ["gpt-audio", 
+                        "gpt-audio-mini"]
+
+        if not any(vm in self.model_name for vm in vision_models):
+            print(
+                f"Warning: Model {self.model_name} may not support vision inputs. "
+                f"Recommended models: {', '.join(vision_models)}"
+            )
+
+    def _encode_image(self, image: Union[Image.Image, str]) -> str:
+        """
+        Encode image to base64 string for OpenAI API.
+
+        Args:
+            image: PIL Image or path to image file
+
+        Returns:
+            Base64 encoded image string
+        """
+        if isinstance(image, str):
+            # Load image from path
+            image = Image.open(image)
+
+        # Convert to RGB if necessary
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
+        # Encode to base64
+        buffered = io.BytesIO()
+        image.save(buffered, format="JPEG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+
+        return f"data:image/jpeg;base64,{img_str}"
+
+    def _format_messages(
+        self,
+        question: str,
+        images: Optional[List[Union[Image.Image, str]]] = None,
+        audio_paths: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Format messages for OpenAI API.
+
+        Args:
+            question: Question text
+            images: List of images (PIL Images or paths)
+            audio_paths: List of audio file paths (limited support)
+
+        Returns:
+            List of message dictionaries for OpenAI API
+        """
+        # Format question with CoT template
+        formatted_question = self.cot_prompt_template.format(question=question)
+
+        # Build content array
+        content = []
+
+        # Add text
+        content.append({"type": "text", "text": formatted_question})
+
+        # Add images if present
+        if images:
+            for img in images:
+                img_base64 = self._encode_image(img)
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": img_base64, "detail": "auto"},
+                    }
+                )
+
+        # Note: Audio support in OpenAI is limited and may require special handling
+        # For now, we'll add a warning if audio is provided
+        if audio_paths:
+            for path in audio_paths:
+                with open(path, "rb") as wav:
+                    wav_data = wav.read()
+                encoded_string = base64.b64encode(wav_data).decode('utf-8')
+                content.append(
+                    {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": encoded_string,
+                        "format": "wav"
+                        }
+                    }
+                )
+
+        return [{"role": "user", 
+                 "content": content}]
+
+    def generate_cot_from_sample(
+        self,
+        sample,
+        num_chains: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_new_tokens: int = 512,
+        return_log_probs: bool = True,
+    ) -> List[CoTChain]:
+        """
+        Generate CoT chains from a UNOBenchSample.
+
+        Args:
+            sample: UNOBenchSample instance
+            num_chains: Number of chains to generate
+            temperature: Sampling temperature
+            top_p: Nucleus sampling parameter
+            max_new_tokens: Maximum tokens to generate
+            return_log_probs: Whether to return log probabilities
+
+        Returns:
+            List of CoTChain objects
+        """
+        return self.generate_cot_chains(
+            question=sample.question,
+            images=sample.images if sample.images else None,
+            audio_paths=sample.audio_paths if sample.audio_paths else None,
+            num_chains=num_chains,
+            temperature=temperature,
+            top_p=top_p,
+            max_new_tokens=max_new_tokens,
+            return_log_probs=return_log_probs,
+        )
+
+    def generate_cot_from_samples_batch(
+        self,
+        samples: List,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_new_tokens: int = 512,
+        return_log_probs: bool = True,
+        use_tqdm: bool = True,
+    ) -> List[CoTChain]:
+        """
+        Generate CoT chains from multiple UNOBenchSamples.
+
+        Args:
+            samples: List of UNOBenchSample instances
+            temperature: Sampling temperature
+            top_p: Nucleus sampling parameter
+            max_new_tokens: Maximum tokens to generate
+            return_log_probs: Whether to return log probabilities
+            use_tqdm: Show progress bar
+
+        Returns:
+            List of CoTChain objects (one per sample)
+        """
+        questions = [s.question for s in samples]
+        images_list = [s.images if s.images else None for s in samples]
+        audio_list = [s.audio_paths if s.audio_paths else None for s in samples]
+
+        return self.generate_cot_chains_batch(
+            questions=questions,
+            images_list=images_list,
+            audio_list=audio_list,
+            temperature=temperature,
+            top_p=top_p,
+            max_new_tokens=max_new_tokens,
+            return_log_probs=return_log_probs,
+            use_tqdm=use_tqdm,
+        )
+
+    def generate_cot_chains(
+        self,
+        question: str,
+        images: Optional[List[Union[Image.Image, str]]] = None,
+        audio_paths: Optional[List[str]] = None,
+        num_chains: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_new_tokens: int = 512,
+        return_log_probs: bool = True,
+    ) -> List[CoTChain]:
+        """
+        Generate multiple CoT chains for a single question.
+
+        Args:
+            question: Input question
+            images: List of input images (PIL Images or paths)
+            audio_paths: List of audio file paths
+            num_chains: Number of chains to generate
+            temperature: Sampling temperature
+            top_p: Nucleus sampling parameter
+            max_new_tokens: Maximum tokens to generate
+            return_log_probs: Whether to return log probabilities
+
+        Returns:
+            List of CoTChain objects
+        """
+        # Generate multiple chains for the same input
+        return self.generate_cot_chains_batch(
+            questions=[question] * num_chains,
+            images_list=[images] * num_chains,
+            audio_list=[audio_paths] * num_chains,
+            temperature=temperature,
+            top_p=top_p,
+            max_new_tokens=max_new_tokens,
+            return_log_probs=return_log_probs,
+        )
+
+    def generate_cot_chains_batch(
+        self,
+        questions: List[str],
+        images_list: Optional[List[Optional[List[Union[Image.Image, str]]]]] = None,
+        audio_list: Optional[List[Optional[List[str]]]] = None,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_new_tokens: int = 512,
+        return_log_probs: bool = True,
+        use_tqdm: bool = True,
+    ) -> List[CoTChain]:
+        """
+        Generate CoT chains for multiple questions.
+
+        Args:
+            questions: List of input questions
+            images_list: List of image lists, one per question
+            audio_list: List of audio path lists, one per question
+            temperature: Sampling temperature
+            top_p: Nucleus sampling parameter
+            max_new_tokens: Maximum tokens to generate
+            return_log_probs: Whether to return log probabilities
+            use_tqdm: Show progress bar
+
+        Returns:
+            List of CoTChain objects (one per question)
+        """
+        # Ensure lists have same length
+        if images_list is None:
+            images_list = [None] * len(questions)
+        if audio_list is None:
+            audio_list = [None] * len(questions)
+
+        # Group identical prompts to use the 'n' parameter efficiently
+        # Map from (question, images_tuple, audios_tuple) to list of indices
+        prompt_groups = {}
+        for idx, (question, images, audios) in enumerate(zip(questions, images_list, audio_list)):
+            # Create a hashable key for grouping
+            images_key = tuple(id(img) for img in images) if images else None
+            audios_key = tuple(audios) if audios else None
+            key = (question, images_key, audios_key)
+
+            if key not in prompt_groups:
+                prompt_groups[key] = {
+                    'indices': [],
+                    'question': question,
+                    'images': images,
+                    'audios': audios
+                }
+            prompt_groups[key]['indices'].append(idx)
+
+        # Prepare result list
+        all_chains = [None] * len(questions)
+
+        if use_tqdm:
+            from tqdm import tqdm
+            iterator = tqdm(prompt_groups.values(), desc="Generating CoT chains")
+        else:
+            iterator = prompt_groups.values()
+
+        for group in iterator:
+            question = group['question']
+            images = group['images']
+            audios = group['audios']
+            indices = group['indices']
+            n_completions = len(indices)
+
+            try:
+                # Format messages
+                messages = self._format_messages(question, images, audios)
+
+                # Make API call with retry logic and n parameter
+                for attempt in range(self.max_retries):
+                    try:
+                        response = self.client.chat.completions.create(
+                            model=self.model_name,
+                            messages=messages,
+                            temperature=temperature,
+                            top_p=top_p,
+                            max_tokens=max_new_tokens,
+                            n=n_completions,  # Generate multiple completions in one call
+                            logprobs=return_log_probs,
+                            top_logprobs=20 if return_log_probs else None,
+                            timeout=self.timeout,
+                        )
+                        break
+                    except Exception as e:
+                        if attempt == self.max_retries - 1:
+                            raise
+                        print(
+                            f"API call failed (attempt {attempt + 1}/{self.max_retries}): {e}"
+                        )
+                        import time
+                        time.sleep(2**attempt)  # Exponential backoff
+
+                # Process each completion and assign to correct index
+                for idx_in_group, choice in enumerate(response.choices):
+                    # Extract generated text
+                    generated_text = choice.message.content
+
+                    # Extract log probabilities if requested
+                    log_probs = None
+                    if return_log_probs and choice.logprobs:
+                        logprobs_content = choice.logprobs.content
+                        if logprobs_content:
+                            log_probs = [token.logprob for token in logprobs_content]
+
+                    # Create chain
+                    chain = self._create_chain(
+                        generated_text=generated_text,
+                        log_probs=log_probs,
+                        metadata={
+                            "temperature": temperature,
+                            "top_p": top_p,
+                            "num_images": len(images) if images else 0,
+                            "num_audios": len(audios) if audios else 0,
+                            "question": question,
+                            "finish_reason": choice.finish_reason,
+                            "model": self.model_name,
+                            "api": "openai",
+                            "total_tokens": response.usage.total_tokens if response.usage else None,
+                            "completion_index": idx_in_group,
+                        },
+                    )
+
+                    # Place chain at correct position
+                    original_idx = indices[idx_in_group]
+                    all_chains[original_idx] = chain
+
+            except Exception as e:
+                print(f"Error generating CoT for question: {e}")
+                # Create empty chains for all indices in this group
+                for idx in indices:
+                    chain = CoTChain(
+                        text="",
+                        steps=[],
+                        final_answer="",
+                        log_probs=None,
+                        metadata={
+                            "error": str(e),
+                            "question": question,
+                            "model": self.model_name,
+                        },
+                    )
+                    all_chains[idx] = chain
+
+        return all_chains
+
+    def _create_chain(
+        self,
+        generated_text: str,
+        log_probs: Optional[List[float]],
+        metadata: Dict[str, Any],
+    ) -> CoTChain:
+        """Create a CoTChain object from generated text."""
+        steps = self._parse_steps(generated_text)
+        final_answer = self._extract_final_answer(generated_text)
+
+        return CoTChain(
+            text=generated_text,
+            steps=steps,
+            final_answer=final_answer,
+            log_probs=log_probs,
+            metadata=metadata,
+        )
+
+    def _parse_steps(self, text: str) -> List[str]:
+        """
+        Parse generated text into individual reasoning steps.
+
+        Looks for patterns like:
+        - "Step 1:", "Step 2:", etc.
+        - Numbered lists: "1.", "2.", etc.
+        - Sentence boundaries for implicit steps
+        """
+        steps = []
+
+        # Try explicit step markers first
+        step_pattern = r"(?:Step\s+\d+:|^\d+\.)\s*(.+?)(?=(?:Step\s+\d+:|\d+\.|Therefore|Thus|So|Answer|$))"
+        matches = re.finditer(step_pattern, text, re.MULTILINE | re.DOTALL)
+
+        for match in matches:
+            step_text = match.group(1).strip()
+            if step_text:
+                steps.append(step_text)
+
+        # If no explicit steps found, split by sentences
+        if not steps:
+            sentences = re.split(r"[.!?]+", text)
+            steps = [s.strip() for s in sentences if len(s.strip()) > 10]
+
+        return steps
+
+    def _extract_final_answer(self, text: str) -> str:
+        """Extract the final answer from the generated text."""
+        # Look for common answer patterns
+        patterns = [
+            r"(?:Therefore|Thus|So),?\s+(?:the answer is|the final answer is)[:;]?\s*(.+)",
+            r"(?:Answer|Final answer)[:;]\s*(.+)",
+            r"(?:The result is|The solution is)[:;]?\s*(.+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+
+        # If no pattern found, return last non-empty line
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        return lines[-1] if lines else ""
+
+    def update_batch_size(self, new_batch_size: int):
+        """Update the batch size for rate limiting."""
+        self.batch_size = new_batch_size
+        print(f"Batch size updated to: {self.batch_size}")
+
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about the model configuration."""
+        return {
+            "status": "ready",
+            "model_name": self.model_name,
+            "api": "openai",
+            "batch_size": self.batch_size,
+            "max_retries": self.max_retries,
+            "timeout": self.timeout,
         }
 
 
