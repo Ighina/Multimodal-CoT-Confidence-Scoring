@@ -22,6 +22,7 @@ except ImportError:
 class CoTChain:
     """Container for a single Chain-of-Thought reasoning chain."""
 
+    id: str
     text: str
     steps: List[str]
     final_answer: str
@@ -307,6 +308,7 @@ class CoTGenerator:
             questions=[question] * num_chains,
             images_list=[images] * num_chains,
             audio_list=[audio_paths] * num_chains,
+            video_list=[video_paths] * num_chains,
             temperature=temperature,
             top_p=top_p,
             max_new_tokens=max_new_tokens,
@@ -738,8 +740,7 @@ class OpenAICoTGenerator:
                                 {"url": path}
                             }
                         )
-
-
+        
         return [{"role": "user", 
                  "content": content}]
 
@@ -938,6 +939,9 @@ class OpenAICoTGenerator:
                 # Make API call with retry logic and n parameter
                 for attempt in range(self.max_retries):
                     try:
+                        extra_body = None
+                        if self.model_name.startswith("qwen"):
+                            extra_body = {"enable_thinking": True}
                         response = self.client.chat.completions.create(
                             model=self.model_name,
                             messages=messages,
@@ -948,6 +952,7 @@ class OpenAICoTGenerator:
                             logprobs=return_log_probs,
                             top_logprobs=20 if return_log_probs else None,
                             timeout=self.timeout,
+                            extra_body=extra_body
                         )
                         break
                     except Exception as e:
