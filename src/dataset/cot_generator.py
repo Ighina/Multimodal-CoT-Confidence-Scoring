@@ -770,6 +770,7 @@ class OpenAICoTGenerator:
             question=sample.question,
             images=sample.images if sample.images else None,
             audio_paths=sample.audio_paths if sample.audio_paths else None,
+            video_paths=sample.video_paths if sample.video_paths else None,
             num_chains=num_chains,
             temperature=temperature,
             top_p=top_p,
@@ -803,11 +804,13 @@ class OpenAICoTGenerator:
         questions = [s.question for s in samples]
         images_list = [s.images if s.images else None for s in samples]
         audio_list = [s.audio_paths if s.audio_paths else None for s in samples]
+        video_list = [s.video_paths if s.video_paths else None for s in samples]
 
         return self.generate_cot_chains_batch(
             questions=questions,
             images_list=images_list,
             audio_list=audio_list,
+            video_list=video_list,
             temperature=temperature,
             top_p=top_p,
             max_new_tokens=max_new_tokens,
@@ -820,6 +823,7 @@ class OpenAICoTGenerator:
         question: str,
         images: Optional[List[Union[Image.Image, str]]] = None,
         audio_paths: Optional[List[str]] = None,
+        video_paths: Optional[List[str]] = None,
         num_chains: int = 1,
         temperature: float = 0.7,
         top_p: float = 0.9,
@@ -847,6 +851,7 @@ class OpenAICoTGenerator:
             questions=[question] * num_chains,
             images_list=[images] * num_chains,
             audio_list=[audio_paths] * num_chains,
+            video_list=[video_paths] * num_chains,
             temperature=temperature,
             top_p=top_p,
             max_new_tokens=max_new_tokens,
@@ -858,6 +863,7 @@ class OpenAICoTGenerator:
         questions: List[str],
         images_list: Optional[List[Optional[List[Union[Image.Image, str]]]]] = None,
         audio_list: Optional[List[Optional[List[str]]]] = None,
+        video_list: Optional[List[Optional[List[str]]]] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_new_tokens: int = 512,
@@ -885,22 +891,26 @@ class OpenAICoTGenerator:
             images_list = [None] * len(questions)
         if audio_list is None:
             audio_list = [None] * len(questions)
+        if video_list is None:
+            video_list = [None] * video_list
 
         # Group identical prompts to use the 'n' parameter efficiently
         # Map from (question, images_tuple, audios_tuple) to list of indices
         prompt_groups = {}
-        for idx, (question, images, audios) in enumerate(zip(questions, images_list, audio_list)):
+        for idx, (question, images, audios, videos) in enumerate(zip(questions, images_list, audio_list, video_list)):
             # Create a hashable key for grouping
             images_key = tuple(id(img) for img in images) if images else None
             audios_key = tuple(audios) if audios else None
-            key = (question, images_key, audios_key)
+            videos_key = tuple(videos) if videos else None
+            key = (question, images_key, audios_key, videos_key)
 
             if key not in prompt_groups:
                 prompt_groups[key] = {
                     'indices': [],
                     'question': question,
                     'images': images,
-                    'audios': audios
+                    'audios': audios,
+                    'videos': videos
                 }
             prompt_groups[key]['indices'].append(idx)
 
@@ -917,12 +927,13 @@ class OpenAICoTGenerator:
             question = group['question']
             images = group['images']
             audios = group['audios']
+            videos = group['videos']
             indices = group['indices']
             n_completions = len(indices)
 
             try:
                 # Format messages
-                messages = self._format_messages(question, images, audios)
+                messages = self._format_messages(question, images, audios, videos)
 
                 # Make API call with retry logic and n parameter
                 for attempt in range(self.max_retries):
