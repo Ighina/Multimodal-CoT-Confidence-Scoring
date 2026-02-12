@@ -2459,6 +2459,12 @@ AUDIO_MODELS = {
 }
 
 # Build unified model map (audio models at line 414, vision models at line 2362)
+OMNI_MODEL_MAP = {
+    "gemma3n": run_gemma3n,
+    "minicpmo": run_minicpmo,
+    "qwen2_5_omni": run_qwen2_5_omni
+}
+
 AUDIO_MODEL_MAP = {
     "audioflamingo3": run_audioflamingo3,
     "gemma3n": run_gemma3n,
@@ -2540,6 +2546,7 @@ def format_multimodal_prompt(
     question: str,
     images: list = None,
     audio_paths: list = None,
+    video_paths: list = None,
     modality: str = "auto",
 ):
     """
@@ -2553,6 +2560,7 @@ def format_multimodal_prompt(
         question: The question text to include in the prompt
         images: List of PIL Images or image paths (for vision models)
         audio_paths: List of audio file paths (for audio models)
+        video_paths: List of video file paths (for video capable models)
         modality: "image", "audio", "video", or "auto" to detect from inputs
 
     Returns:
@@ -2577,7 +2585,7 @@ def format_multimodal_prompt(
     if modality == "auto":
         if images and audio_paths:
             # Omni-modal - check if model supports both
-            if model_type in ["qwen2_5_omni", "gemma3n"]:
+            if model_type in ["qwen2_5_omni", "gemma3n", "minicpmo"]:
                 modality = "omni"
             else:
                 raise ValueError(
@@ -2588,6 +2596,8 @@ def format_multimodal_prompt(
             modality = "image"
         elif audio_paths:
             modality = "audio"
+        elif video_paths:
+            modality = "video"
         else:
             # Text-only
             modality = "text"
@@ -2599,7 +2609,9 @@ def format_multimodal_prompt(
         images = [Image.open(img_path).convert("RGB") for img_path in images]
 
     # Format based on model type
-    if model_type in AUDIO_MODEL_MAP:
+    if model_type in OMNI_MODEL_MAP:
+        raise NotImplementedError()
+    elif model_type in AUDIO_MODEL_MAP:
         # Audio-language model
         audio_count = len(audio_paths) if audio_paths else 0
 
@@ -2611,6 +2623,8 @@ def format_multimodal_prompt(
         if audio_paths:
             audio_data = [load_audio_files(audio_path) for audio_path in audio_paths]
             multi_modal_data["audio"] = audio_data
+        if video_paths:
+            pass
 
         prompt = re.sub(r"<audio_\d+>", "", req_data.prompt).strip()
         prompt = re.sub(r"following audio:", "provided audio", prompt).strip()
@@ -2661,5 +2675,5 @@ def get_supported_models():
     return {
         "audio_models": sorted(AUDIO_MODEL_MAP.keys()),
         "vision_models": sorted(VISION_MODEL_MAP.keys()),
-        "omni_models": ["qwen2_5_omni", "gemma3n"],
+        "omni_models": ["qwen2_5_omni", "gemma3n", "minicpmo"],
     }

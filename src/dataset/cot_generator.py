@@ -1,6 +1,7 @@
 import re
 import base64
 import io
+import os
 from typing import List, Optional, Dict, Any, Union
 from dataclasses import dataclass
 from PIL import Image
@@ -223,6 +224,7 @@ class CoTGenerator:
             question=sample.question,
             images=sample.images if sample.images else None,
             audio_paths=sample.audio_paths if sample.audio_paths else None,
+            video_paths=sample.video_paths if sample.video_paths else None,
             num_chains=num_chains,
             temperature=temperature,
             top_p=top_p,
@@ -258,11 +260,13 @@ class CoTGenerator:
         questions = [s.question for s in samples]
         images_list = [s.images if s.images else None for s in samples]
         audio_list = [s.audio_paths if s.audio_paths else None for s in samples]
+        video_list = [s.video_paths if s.video_paths else None for s in samples]
 
         return self.generate_cot_chains_batch(
             questions=questions,
             images_list=images_list,
             audio_list=audio_list,
+            video_list=video_list,
             temperature=temperature,
             top_p=top_p,
             max_new_tokens=max_new_tokens,
@@ -275,6 +279,7 @@ class CoTGenerator:
         question: str,
         images: Optional[List[Union[Image.Image, str]]] = None,
         audio_paths: Optional[List[str]] = None,
+        video_paths: Optional[List[str]] = None,
         num_chains: int = 1,
         temperature: float = 0.7,
         top_p: float = 0.9,
@@ -313,6 +318,7 @@ class CoTGenerator:
         questions: List[str],
         images_list: Optional[List[Optional[List[Union[Image.Image, str]]]]] = None,
         audio_list: Optional[List[Optional[List[str]]]] = None,
+        video_list: Optional[List[Optional[List[str]]]] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_new_tokens: int = 512,
@@ -344,6 +350,8 @@ class CoTGenerator:
             images_list = [None] * len(questions)
         if audio_list is None:
             audio_list = [None] * len(questions)
+        if video_list is None:
+            video_list = [None] * len(questions)
 
         # Prepare sampling parameters
         sampling_params = SamplingParams(
@@ -356,8 +364,8 @@ class CoTGenerator:
 
         # Format all prompts with the template
         prompts = [
-            self._format_prompt(q, imgs, audios)
-            for q, imgs, audios in zip(questions, images_list, audio_list)
+            self._format_prompt(q, imgs, audios, videos)
+            for q, imgs, audios, videos in zip(questions, images_list, audio_list, video_list)
         ]
 
         all_chains = []
@@ -428,6 +436,7 @@ class CoTGenerator:
         question: str,
         images: Optional[Union[List[Image.Image], List[str]]] = None,
         audio_paths: Optional[List[str]] = None,
+        video_paths: Optional[List[str]] = None
     ) -> Union[str, Dict[str, Any]]:
         """
         Format the prompt for the model using model-specific formatting.
@@ -453,6 +462,7 @@ class CoTGenerator:
                 question=formatted_question,
                 images=images if images else None,
                 audio_paths=audio_paths if audio_paths else None,
+                video_paths=video_paths if video_paths else None,
                 modality="auto",
             )
 
@@ -603,7 +613,11 @@ class OpenAICoTGenerator:
         )
 
         # Initialize OpenAI client
-        self.client = OpenAI(api_key=api_key)
+        if model_name.startswith("qwen"):
+            self.client = OpenAI(api_key=os.getenv("DASHSCOPE_API_KEY"),
+                                 base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+        else:
+            self.client = OpenAI(api_key=api_key)
 
         # Validate model supports multimodal
         self._validate_model()
@@ -621,12 +635,16 @@ class OpenAICoTGenerator:
             "gpt-4-vision-preview",
             "gpt-5",
             "gpt-5-mini",
-            "gpt-5-nano"
+            "gpt-5-nano",
+            "qwen-3-omni"
         ]
 
         # Models that support audio (currently limited)
         audio_models = ["gpt-audio", 
-                        "gpt-audio-mini"]
+                        "gpt-audio-mini",
+                        "qwen-3-omni"]
+        
+        omni_models = ["qwen-3-omni"]
 
         if not any(vm in self.model_name for vm in vision_models):
             print(
@@ -664,6 +682,7 @@ class OpenAICoTGenerator:
         question: str,
         images: Optional[List[Union[Image.Image, str]]] = None,
         audio_paths: Optional[List[str]] = None,
+        video_paths: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Format messages for OpenAI API.
@@ -672,6 +691,7 @@ class OpenAICoTGenerator:
             question: Question text
             images: List of images (PIL Images or paths)
             audio_paths: List of audio file paths (limited support)
+            video_paths: List of video file paths (limited support)
 
         Returns:
             List of message dictionaries for OpenAI API
@@ -696,8 +716,6 @@ class OpenAICoTGenerator:
                     }
                 )
 
-        # Note: Audio support in OpenAI is limited and may require special handling
-        # For now, we'll add a warning if audio is provided
         if audio_paths:
             for path in audio_paths:
                 with open(path, "rb") as wav:
@@ -712,6 +730,15 @@ class OpenAICoTGenerator:
                         }
                     }
                 )
+        
+        if video_paths:
+            for path in video_paths:
+                content.append({"type": "video_url",
+                                "video_url": 
+                                {"url": path}
+                            }
+                        )
+
 
         return [{"role": "user", 
                  "content": content}]
@@ -753,9 +780,9 @@ class OpenAICoTGenerator:
     def generate_cot_from_samples_batch(
         self,
         samples: List,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        max_new_tokens: int = 512,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        max_new_tokens: int = 1024,
         return_log_probs: bool = True,
         use_tqdm: bool = True,
     ) -> List[CoTChain]:

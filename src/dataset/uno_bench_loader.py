@@ -17,6 +17,7 @@ class UNOBenchSample:
     images: Optional[List[Image.Image]] = None  # PIL images
     image_paths: Optional[List[str]] = None  # Paths to image files
     audio_paths: Optional[List[str]] = None  # Paths to audio files
+    video_paths: Optional[List[str]] = None # Paths to video files
     audio_data: Optional[List[np.ndarray]] = None  # Loaded audio waveforms
     modality: str = "omni-modal"  # 'uni-modal', 'omni-modal', 'audio', etc.
     reasoning_type: str = (
@@ -98,6 +99,15 @@ class UNOBenchLoader:
                 if full_path.exists():
                     audio_paths.append(str(full_path))
 
+            # Load audio paths (not loading audio data yet for efficiency)
+            video_paths = []
+            for video_path in item.get("videos", []):
+                if item["videos"][video_path] is None:
+                    continue
+                full_path = self.data_path / item["videos"][video_path]
+                if full_path.exists():
+                    video_paths.append(str(full_path))
+
             sample = UNOBenchSample(
                 id=item["qid"],
                 question=item["question"],
@@ -106,6 +116,7 @@ class UNOBenchLoader:
                 image_paths=image_paths,
                 audio_paths=audio_paths if audio_paths else None,
                 audio_data=None,  # Lazy loading - load when needed
+                video_paths=video_paths,
                 modality=item.get("subset_name", "omni-modal"),
                 reasoning_type=item.get("task", "unknown"),
                 metadata={
