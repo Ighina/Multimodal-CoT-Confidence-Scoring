@@ -198,6 +198,7 @@ class UNOBenchDataset(Dataset):
             "image": images,
             "image_paths": sample.image_paths,
             "audio_paths": sample.audio_paths,
+            "video_paths": sample.video_paths,
             "modality": sample.modality,
             "reasoning_type": sample.reasoning_type,
             "metadata": sample.metadata,

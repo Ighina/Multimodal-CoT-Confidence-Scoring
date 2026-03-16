@@ -534,7 +534,8 @@ def save_results(
     - If save_embeddings is a directory path, saves individual files per sample
     - If save_embeddings is a file path, saves all embeddings in one file (legacy behavior)
     """
-    if cots and save_cots:
+    if save_cots:
+        assert cots, "cots list is empty! All generation efforts have failed!"
         with open(save_cots, "w") as f:
             json.dump(
                 [[convert_to_dict(chain) for chain in chains] for chains in cots],
@@ -834,6 +835,12 @@ def main():
         "When enabled, embeddings are saved/loaded as individual files in a directory.",
     )
 
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable fine-grained logging."
+    )
+
     args = parser.parse_args()
 
     # Setup
@@ -893,9 +900,13 @@ def main():
                     max_new_tokens=args.max_new_tokens,
                     num_chains=args.num_chains,
                 )
-            except:
+            except Exception as e:
+                if args.verbose:
+                    print(f"Could not process sample at index {idx}.\nThrown following exception: {e}")
                 continue
             cots.append(chains)
+            if args.verbose:
+                print("Done generating CoTs. Total successfull CoTs: {len(cots)} (times number of candidates chosen)")
     elif args.load_cots:
         logger.info(f"Loading CoTs from {args.load_cots}...")
         with open(args.load_cots, "r") as f:

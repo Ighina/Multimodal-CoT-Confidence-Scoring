@@ -46,9 +46,9 @@ class CoTGenerator:
         cot_prompt_template: Optional[str] = None,
         batch_size: int = 32,
         enable_prefix_caching: bool = True,
-        gpu_memory_utilization: float = 0.9,
+        gpu_memory_utilization: float = 0.7,
         max_model_len: Optional[int] = None,
-        tensor_parallel_size: int = 1,
+        tensor_parallel_size: int = 2,
         lazy_model_loading: bool = False,
     ):
         """
@@ -638,15 +638,17 @@ class OpenAICoTGenerator:
             "gpt-5",
             "gpt-5-mini",
             "gpt-5-nano",
-            "qwen-3-omni"
+            "qwen3-omni-flash",
+            "qwen3-omni-turbo"
         ]
 
         # Models that support audio (currently limited)
         audio_models = ["gpt-audio", 
                         "gpt-audio-mini",
-                        "qwen-3-omni"]
+                        "qwen3-omni-flash",
+                        "qwen3-omni-turbo"]
         
-        omni_models = ["qwen-3-omni"]
+        omni_models = ["qwen3-omni-flash", "qwen-3-omni-turbo"]
 
         if not any(vm in self.model_name for vm in vision_models):
             print(
@@ -674,10 +676,10 @@ class OpenAICoTGenerator:
 
         # Encode to base64
         buffered = io.BytesIO()
-        image.save(buffered, format="JPEG")
+        image.save(buffered, format="PNG")
         img_str = base64.b64encode(buffered.getvalue()).decode()
 
-        return f"data:image/jpeg;base64,{img_str}"
+        return f"data:image/png;base64,{img_str}"
 
     def _format_messages(
         self,
@@ -685,6 +687,7 @@ class OpenAICoTGenerator:
         images: Optional[List[Union[Image.Image, str]]] = None,
         audio_paths: Optional[List[str]] = None,
         video_paths: Optional[List[str]] = None,
+        online: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Format messages for OpenAI API.
@@ -694,7 +697,7 @@ class OpenAICoTGenerator:
             images: List of images (PIL Images or paths)
             audio_paths: List of audio file paths (limited support)
             video_paths: List of video file paths (limited support)
-
+            online: boolean defining whether the location of the input audio/video is local or online
         Returns:
             List of message dictionaries for OpenAI API
         """
@@ -720,24 +723,53 @@ class OpenAICoTGenerator:
 
         if audio_paths:
             for path in audio_paths:
-                with open(path, "rb") as wav:
-                    wav_data = wav.read()
-                encoded_string = base64.b64encode(wav_data).decode('utf-8')
-                content.append(
+                file_format = path.split(".")[-1]
+                if online:
+                    data = f"https://huggingface.co/datasets/meituan-longcat/UNO-Bench/blob/main/audios/{path}"
+                    content.append(
                     {
                     "type": "input_audio",
                     "input_audio": {
-                        "data": encoded_string,
-                        "format": "wav"
+                        "data": data,
+                        "format": file_format
+                        }
+                    }
+                )
+                else:
+                    with open(path, "rb") as wav:
+                        wav_data = wav.read()
+                    encoded_string = base64.b64encode(wav_data).decode('utf-8')
+                    content.append(
+                    {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": f"data:;base64,{encoded_string}",
+                        "format": file_format
                         }
                     }
                 )
         
         if video_paths:
             for path in video_paths:
-                content.append({"type": "video_url",
+                file_format = path.split(".")[-1]
+                if online:
+                    data = f"https://huggingface.co/datasets/meituan-longcat/UNO-Bench/blob/main/videos/{path}"
+                    content.append(
+                    {
+                    "type": "video_url",
+                    "video_url": {
+                        "url": data,
+                        }
+                    }
+                )
+                else:
+                    with open(path, "rb") as video:
+                        video_data = video.read()
+                    base64_video = base64.b64encode(video_data).decode('utf-8')
+                    file_format = path.split(".")[-1]
+                    content.append({"type": "video_url",
                                 "video_url": 
-                                {"url": path}
+                                {"url": f"data:;base64,{base64_video}"}
                             }
                         )
         
@@ -752,6 +784,7 @@ class OpenAICoTGenerator:
         top_p: float = 0.9,
         max_new_tokens: int = 512,
         return_log_probs: bool = True,
+        return_raw: bool = False
     ) -> List[CoTChain]:
         """
         Generate CoT chains from a UNOBenchSample.
@@ -777,6 +810,7 @@ class OpenAICoTGenerator:
             top_p=top_p,
             max_new_tokens=max_new_tokens,
             return_log_probs=return_log_probs,
+            return_raw=return_raw
         )
 
     def generate_cot_from_samples_batch(
@@ -787,6 +821,7 @@ class OpenAICoTGenerator:
         max_new_tokens: int = 1024,
         return_log_probs: bool = True,
         use_tqdm: bool = True,
+        return_raw: bool = False
     ) -> List[CoTChain]:
         """
         Generate CoT chains from multiple UNOBenchSamples.
@@ -817,6 +852,7 @@ class OpenAICoTGenerator:
             max_new_tokens=max_new_tokens,
             return_log_probs=return_log_probs,
             use_tqdm=use_tqdm,
+            return_raw=return_raw
         )
 
     def generate_cot_chains(
@@ -830,6 +866,7 @@ class OpenAICoTGenerator:
         top_p: float = 0.9,
         max_new_tokens: int = 512,
         return_log_probs: bool = True,
+        return_raw: bool = False
     ) -> List[CoTChain]:
         """
         Generate multiple CoT chains for a single question.
@@ -857,6 +894,7 @@ class OpenAICoTGenerator:
             top_p=top_p,
             max_new_tokens=max_new_tokens,
             return_log_probs=return_log_probs,
+            return_raw=return_raw
         )
 
     def generate_cot_chains_batch(
@@ -870,6 +908,7 @@ class OpenAICoTGenerator:
         max_new_tokens: int = 512,
         return_log_probs: bool = True,
         use_tqdm: bool = True,
+        return_raw: bool = False
     ) -> List[CoTChain]:
         """
         Generate CoT chains for multiple questions.
@@ -944,15 +983,18 @@ class OpenAICoTGenerator:
                             extra_body = {"enable_thinking": True}
                         response = self.client.chat.completions.create(
                             model=self.model_name,
+                            modalities=["text"],
                             messages=messages,
                             temperature=temperature,
                             top_p=top_p,
                             max_tokens=max_new_tokens,
                             n=n_completions,  # Generate multiple completions in one call
-                            logprobs=return_log_probs,
-                            top_logprobs=20 if return_log_probs else None,
+                            #logprobs=return_log_probs,
+                            #top_logprobs=20 if return_log_probs else None,
                             timeout=self.timeout,
-                            extra_body=extra_body
+                            extra_body=extra_body,
+                            stream=True,
+                            stream_options={"include_usage": True},
                         )
                         break
                     except Exception as e:
@@ -963,7 +1005,8 @@ class OpenAICoTGenerator:
                         )
                         import time
                         time.sleep(2**attempt)  # Exponential backoff
-
+                if return_raw:
+                    return response
                 # Process each completion and assign to correct index
                 for idx_in_group, choice in enumerate(response.choices):
                     # Extract generated text
