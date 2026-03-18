@@ -5,7 +5,7 @@ Measures how well CoT steps align with visual (images), auditory (audio),
 or other non-textual information.
 """
 
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,11 +18,14 @@ class CrossModalCoherenceMetric(nn.Module):
     Compute cross-modal coherence between reasoning steps and other modalities.
 
     Supports alignment with images, audio, video, or any other modality embeddings.
+    Also supports omni-modal inputs via a dictionary of modality embeddings, computing
+    synergistic metrics to penalize modality collapse.
 
     Measures:
     1. Step-to-modal alignment: Do steps refer to relevant modal information?
     2. Contrastive coherence: Is alignment stronger to true modality than negatives?
     3. Attention-weighted alignment: Do steps attend to relevant modal features?
+    4. Synergistic Grounding (Omni-modal): Geometric mean and variance-penalized fusion.
     """
 
     def __init__(
@@ -30,7 +33,8 @@ class CrossModalCoherenceMetric(nn.Module):
         similarity_metric: str = "cosine",
         contrastive_margin: float = 0.2,
         temperature: float = 0.07,
-        use_attention: bool = False
+        use_attention: bool = False,
+        variance_penalty_weight: float = 1.0
     ):
         """
         Initialize cross-modal coherence metric.
@@ -40,12 +44,14 @@ class CrossModalCoherenceMetric(nn.Module):
             contrastive_margin: Margin for contrastive loss
             temperature: Temperature for contrastive similarity
             use_attention: Whether to use attention weighting
+            variance_penalty_weight: Weight for the variance penalty in omni-modal fusion
         """
         super().__init__()
         self.similarity_metric = similarity_metric
         self.contrastive_margin = contrastive_margin
         self.temperature = temperature
         self.use_attention = use_attention
+        self.variance_penalty_weight = variance_penalty_weight
 
     def compute_step_modal_alignment(
         self,
@@ -54,18 +60,13 @@ class CrossModalCoherenceMetric(nn.Module):
     ) -> torch.Tensor:
         """
         Compute alignment between steps and modal embeddings (images, audio, etc.).
-
-        Args:
-            step_embeddings: (num_steps, embed_dim)
-            modal_embeddings: (num_modals, embed_dim) or (embed_dim,) - can be image, audio, etc.
-
-        Returns:
-            Alignment score
         """
         if modal_embeddings.dim() == 1:
             modal_embeddings = modal_embeddings.unsqueeze(0)
 
         # Compute similarity matrix: (num_steps, num_modals)
+        # TODO: NORMALIZE FOR DISTANCE TO BE WITHIN 0-1
+        # TODO: Change below to work with omnimodal inputs (combination of two or more modalities)
         similarities = []
         if self.similarity_metric == "clap":
             for modal_emb in modal_embeddings:
@@ -96,33 +97,10 @@ class CrossModalCoherenceMetric(nn.Module):
         positive_modal_embeddings: torch.Tensor,
         negative_modal_embeddings: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
-        """
-        Compute contrastive coherence: alignment to true vs. distractor modals.
-
-        Args:
-            step_embeddings: (num_steps, embed_dim)
-            positive_modal_embeddings: (num_pos_modals, embed_dim) - true modality (image/audio)
-            negative_modal_embeddings: (num_neg_modals, embed_dim) - distractor modality
-
-        Returns:
-            Dictionary with contrastive scores
-        """
-        # Positive alignment
-        pos_alignment = self.compute_step_modal_alignment(
-            step_embeddings,
-            positive_modal_embeddings
-        )
-
-        # Negative alignment
-        neg_alignment = self.compute_step_modal_alignment(
-            step_embeddings,
-            negative_modal_embeddings
-        )
-
-        # Contrastive score: positive should be higher than negative
+        """Compute contrastive coherence: alignment to true vs. distractor modals."""
+        pos_alignment = self.compute_step_modal_alignment(step_embeddings, positive_modal_embeddings)
+        neg_alignment = self.compute_step_modal_alignment(step_embeddings, negative_modal_embeddings)
         contrastive_score = pos_alignment - neg_alignment
-
-        # Apply margin
         margin_score = F.relu(contrastive_score - self.contrastive_margin)
 
         return {
@@ -138,50 +116,23 @@ class CrossModalCoherenceMetric(nn.Module):
         modal_embeddings: torch.Tensor,
         return_attention: bool = False
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Compute attention-weighted alignment.
-
-        Each step attends to modal features, weighted by relevance.
-
-        Args:
-            step_embeddings: (num_steps, embed_dim)
-            modal_embeddings: (num_modals, embed_dim) - image, audio, or other modality
-            return_attention: Whether to return attention weights
-
-        Returns:
-            Weighted alignment score and optionally attention weights
-        """
+        """Compute attention-weighted alignment."""
         if modal_embeddings.dim() == 1:
             modal_embeddings = modal_embeddings.unsqueeze(0)
 
-        # Compute attention scores: (num_steps, num_modals)
-        attention_logits = torch.matmul(
-            step_embeddings,
-            modal_embeddings.T
-        ) / self.temperature
-
-        # Softmax to get attention weights
+        attention_logits = torch.matmul(step_embeddings, modal_embeddings.T) / self.temperature
         attention_weights = F.softmax(attention_logits, dim=1)
 
-        # Compute similarity matrix
         similarity_matrix = []
         for step_emb in step_embeddings:
             step_sims = []
             for modal_emb in modal_embeddings:
-                sim = compute_similarity(
-                    step_emb,
-                    modal_emb,
-                    metric=self.similarity_metric
-                )
+                sim = compute_similarity(step_emb, modal_emb, metric=self.similarity_metric)
                 step_sims.append(sim)
             similarity_matrix.append(torch.stack(step_sims))
 
-        similarity_matrix = torch.stack(similarity_matrix)  # (num_steps, num_modals)
-
-        # Weight similarities by attention
+        similarity_matrix = torch.stack(similarity_matrix)
         weighted_similarities = similarity_matrix * attention_weights
-
-        # Aggregate
         alignment_score = weighted_similarities.sum(dim=1).mean()
 
         if return_attention:
@@ -194,32 +145,16 @@ class CrossModalCoherenceMetric(nn.Module):
         step_embeddings: torch.Tensor,
         modal_embeddings: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Compute coherence score for each step individually.
-
-        Args:
-            step_embeddings: (num_steps, embed_dim)
-            modal_embeddings: (num_modals, embed_dim) - image, audio, or other modality
-
-        Returns:
-            Per-step coherence scores (num_steps,)
-        """
+        """Compute coherence score for each step individually."""
         if modal_embeddings.dim() == 1:
             modal_embeddings = modal_embeddings.unsqueeze(0)
 
         per_step_scores = []
-
         for step_emb in step_embeddings:
-            # Max similarity to any modal embedding
             step_sims = []
             for modal_emb in modal_embeddings:
-                sim = compute_similarity(
-                    step_emb,
-                    modal_emb,
-                    metric=self.similarity_metric
-                )
+                sim = compute_similarity(step_emb, modal_emb, metric=self.similarity_metric)
                 step_sims.append(sim)
-
             max_sim = torch.stack(step_sims).max()
             per_step_scores.append(max_sim)
 
@@ -228,7 +163,7 @@ class CrossModalCoherenceMetric(nn.Module):
     def forward(
         self,
         step_embeddings: torch.Tensor,
-        modal_embeddings: torch.Tensor,
+        modal_embeddings: Union[torch.Tensor, Dict[str, torch.Tensor]],
         negative_modal_embeddings: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
@@ -236,7 +171,8 @@ class CrossModalCoherenceMetric(nn.Module):
 
         Args:
             step_embeddings: (num_steps, embed_dim)
-            modal_embeddings: (num_modals, embed_dim) - can be image, audio, or other modality
+            modal_embeddings: (num_modals, embed_dim) OR a Dictionary of modalities 
+                              e.g., {'image': img_tensor, 'audio': audio_tensor}
             negative_modal_embeddings: Optional negative samples
 
         Returns:
@@ -244,19 +180,67 @@ class CrossModalCoherenceMetric(nn.Module):
         """
         results = {}
 
+        # =====================================================================
+        # OMNI-MODAL LOGIC (Multiple Modalities)
+        # =====================================================================
+        if isinstance(modal_embeddings, dict):
+            alignments = []
+            per_step_alignments_list = []
+
+            for mod_name, mod_embeds in modal_embeddings.items():
+                # 1. Chain-level alignment for this modality
+                align = self.compute_step_modal_alignment(step_embeddings, mod_embeds)
+                alignments.append(align)
+
+                # 2. Per-step alignment for this modality
+                per_step = self.compute_per_step_coherence(step_embeddings, mod_embeds)
+                per_step_alignments_list.append(per_step)
+
+            # Convert to stacked tensors
+            alignments_tensor = torch.stack(alignments)
+            stacked_per_step = torch.stack(per_step_alignments_list) # (num_mods, num_steps)
+
+            # Max alignment logic (represents modality collapse fallback)
+            results['overall'] = alignments_tensor.max()
+            results['alignment'] = alignments_tensor.mean()
+            results['alignments_per_modality'] = alignments_tensor
+            
+            # --- Synergistic Metrics ---
+            # Geometric Mean: (prod_k A^(k))^(1/K)
+            # Add epsilon and clamp to prevent log(0) and negative values
+            clamped_alignments = torch.clamp(stacked_per_step, min=1e-8)
+            log_align = torch.log(clamped_alignments)
+            mean_log = torch.mean(log_align, dim=0)
+            geometric_mean_per_step = torch.exp(mean_log)
+            results['geometric_mean'] = geometric_mean_per_step.mean()
+
+            # Variance Penalized: mu - lambda * sigma^2
+            mu = torch.mean(stacked_per_step, dim=0)
+            var = torch.var(stacked_per_step, dim=0, unbiased=False)
+            variance_penalised_per_step = mu - (self.variance_penalty_weight * var)
+            # Ensure it doesn't drop below 0
+            variance_penalised_per_step = torch.clamp(variance_penalised_per_step, min=0.0) 
+            results['variance_penalised'] = variance_penalised_per_step.mean()
+
+            # Aggregate per_step_coherence taking the max across modalities per step
+            # This maintains backward compatibility for downstream tasks
+            results['per_step_coherence'] = stacked_per_step.max(dim=0)[0]
+            results['min_step_coherence'] = results['per_step_coherence'].min()
+
+            return results
+
+        # =====================================================================
+        # SINGLE MODALITY LOGIC (Backward Compatibility)
+        # =====================================================================
+        
         # Basic alignment
-        alignment = self.compute_step_modal_alignment(
-            step_embeddings,
-            modal_embeddings
-        )
+        alignment = self.compute_step_modal_alignment(step_embeddings, modal_embeddings)
         results['alignment'] = alignment
 
         # Attention-weighted alignment
         if self.use_attention:
             weighted_alignment, attention = self.compute_attention_weighted_alignment(
-                step_embeddings,
-                modal_embeddings,
-                return_attention=True
+                step_embeddings, modal_embeddings, return_attention=True
             )
             results['weighted_alignment'] = weighted_alignment
             results['attention_weights'] = attention
@@ -264,17 +248,12 @@ class CrossModalCoherenceMetric(nn.Module):
         # Contrastive coherence
         if negative_modal_embeddings is not None:
             contrastive_scores = self.compute_contrastive_coherence(
-                step_embeddings,
-                modal_embeddings,
-                negative_modal_embeddings
+                step_embeddings, modal_embeddings, negative_modal_embeddings
             )
             results.update(contrastive_scores)
 
         # Per-step scores
-        per_step_scores = self.compute_per_step_coherence(
-            step_embeddings,
-            modal_embeddings
-        )
+        per_step_scores = self.compute_per_step_coherence(step_embeddings, modal_embeddings)
         results['per_step_coherence'] = per_step_scores
         results['min_step_coherence'] = per_step_scores.min()
 
@@ -295,30 +274,14 @@ class CrossModalCoherenceMetric(nn.Module):
     def compute_for_batch(
         self,
         batch_step_embeddings: List[torch.Tensor],
-        batch_modal_embeddings: List[torch.Tensor],
+        batch_modal_embeddings: List[Union[torch.Tensor, Dict[str, torch.Tensor]]],
         batch_negative_embeddings: Optional[List[torch.Tensor]] = None
     ) -> List[Dict[str, torch.Tensor]]:
-        """
-        Compute cross-modal coherence for a batch.
-
-        Args:
-            batch_step_embeddings: List of step embeddings
-            batch_modal_embeddings: List of modal embeddings (image, audio, etc.)
-            batch_negative_embeddings: Optional negative samples
-
-        Returns:
-            List of score dictionaries
-        """
+        """Compute cross-modal coherence for a batch."""
         results = []
 
-        for i, (step_embeds, modal_embeds) in enumerate(
-            zip(batch_step_embeddings, batch_modal_embeddings)
-        ):
-            neg_embeds = (
-                batch_negative_embeddings[i]
-                if batch_negative_embeddings
-                else None
-            )
+        for i, (step_embeds, modal_embeds) in enumerate(zip(batch_step_embeddings, batch_modal_embeddings)):
+            neg_embeds = batch_negative_embeddings[i] if batch_negative_embeddings else None
 
             scores = self.forward(
                 step_embeddings=step_embeds,
@@ -329,9 +292,7 @@ class CrossModalCoherenceMetric(nn.Module):
 
         return results
 
-    # Backward compatibility aliases for image-specific methods
-    def compute_step_image_alignment(self, step_embeddings: torch.Tensor,
-                                    image_embeddings: torch.Tensor) -> torch.Tensor:
+    def compute_step_image_alignment(self, step_embeddings: torch.Tensor, image_embeddings: torch.Tensor) -> torch.Tensor:
         """Backward compatibility: Use compute_step_modal_alignment instead."""
         return self.compute_step_modal_alignment(step_embeddings, image_embeddings)
 

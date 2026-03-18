@@ -8,6 +8,7 @@ import pickle
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 
@@ -29,16 +30,18 @@ def compute_similarity(
         Similarity scores
     """
     if metric == "cosine":
-        # Normalize and compute dot product
-        embed1_norm = torch.nn.functional.normalize(embed1, p=2, dim=-1)
-        embed2_norm = torch.nn.functional.normalize(embed2, p=2, dim=-1)
-        return torch.sum(embed1_norm * embed2_norm, dim=-1)
+        sim = F.cosine_similarity(embed1, embed2, dim=-1)
+        sim = (sim + 1) / 2
+        sim = torch.clamp(sim, 0.0, 1.0)
+        return sim
 
     elif metric == "dot_product":
+        raise ValueError("Before using, define a normalization mechanism")
         return torch.sum(embed1 * embed2, dim=-1)
 
     elif metric == "euclidean":
         # Return negative distance (higher is more similar)
+        raise ValueError("Before using, define a normalization mechanism")
         return -torch.norm(embed1 - embed2, p=2, dim=-1)
 
     else:

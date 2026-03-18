@@ -11,7 +11,7 @@ import torch.nn as nn
 
 from ..embeddings.embedding_utils import compute_similarity, compute_pairwise_similarity
 
-
+# TODO: NORMALIZE FOR DISTANCE TO BE WITHIN 0-1
 class InternalCoherenceMetric(nn.Module):
     """
     Compute internal coherence of a Chain-of-Thought.
