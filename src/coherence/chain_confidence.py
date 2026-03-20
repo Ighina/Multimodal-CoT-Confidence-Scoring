@@ -9,6 +9,8 @@ import torch.nn as nn
 from .internal_coherence import InternalCoherenceMetric
 from .cross_modal_coherence import CrossModalCoherenceMetric
 from ..coherence_models.density_model import DensityModel
+# Assuming the text-based metrics are saved here:
+# from .text_coherence import NLICoherenceMetric, PRMCoherenceMetric
 
 
 class ChainConfidenceScorer(nn.Module):
@@ -16,9 +18,11 @@ class ChainConfidenceScorer(nn.Module):
     Compute overall confidence score for a CoT chain.
 
     Combines:
-    1. Internal textual coherence
+    1. Internal textual coherence (Embedding-based)
     2. Cross-modal coherence
     3. Optional density-based rarity penalty
+    4. Optional NLI-based logical entailment (Text-based)
+    5. Optional PRM-based step correctness (Text-based)
     """
 
     def __init__(
@@ -26,120 +30,111 @@ class ChainConfidenceScorer(nn.Module):
         internal_metric: Optional[InternalCoherenceMetric] = None,
         cross_modal_metric: Optional[CrossModalCoherenceMetric] = None,
         density_model: Optional[DensityModel] = None,
-        internal_weight: float = 0.5,
-        cross_modal_weight: float = 0.4,
+        nli_metric = None,  # Optional[NLICoherenceMetric]
+        prm_metric = None,  # Optional[PRMCoherenceMetric]
+        internal_weight: float = 0.3,
+        cross_modal_weight: float = 0.3,
         density_weight: float = 0.1,
+        nli_weight: float = 0.15,
+        prm_weight: float = 0.15,
         use_learned_weights: bool = False,
-        feature_dim: int = 10
+        feature_dim: int = 15  # Increased to 15 to accommodate new text features
     ):
-        """
-        Initialize chain confidence scorer.
-
-        Args:
-            internal_metric: Internal coherence metric
-            cross_modal_metric: Cross-modal coherence metric
-            density_model: Optional density model for rarity detection
-            internal_weight: Weight for internal coherence
-            cross_modal_weight: Weight for cross-modal coherence
-            density_weight: Weight for density score
-            use_learned_weights: Whether to learn weights
-            feature_dim: Dimension of combined features
-        """
         super().__init__()
 
-        # Coherence metrics
+        # Coherence metrics (Embedding-based)
         self.internal_metric = internal_metric or InternalCoherenceMetric()
         self.cross_modal_metric = cross_modal_metric or CrossModalCoherenceMetric()
         self.density_model = density_model
+        
+        # Coherence metrics (Text-based)
+        self.nli_metric = nli_metric
+        self.prm_metric = prm_metric
 
-        # Weights
+        # 5 Component weights: Internal, CrossModal, Density, NLI, PRM
         if use_learned_weights:
-            # Learn weights via a small MLP
             self.weight_network = nn.Sequential(
                 nn.Linear(feature_dim, 32),
                 nn.ReLU(),
-                nn.Linear(32, 3),
+                nn.Linear(32, 5), # Output 5 weights instead of 3
                 nn.Softmax(dim=-1)
             )
         else:
-            # Fixed weights
             self.register_buffer(
                 'weights',
-                torch.tensor([internal_weight, cross_modal_weight, density_weight])
+                torch.tensor([
+                    internal_weight, 
+                    cross_modal_weight, 
+                    density_weight, 
+                    nli_weight if nli_metric else 0.0, 
+                    prm_weight if prm_metric else 0.0
+                ])
             )
+            # Normalize static weights just in case some are disabled
+            self.weights = self.weights / (self.weights.sum() + 1e-8)
             self.weight_network = None
 
     def compute_features(
         self,
         internal_scores: Dict[str, torch.Tensor],
         cross_modal_scores: Dict[str, torch.Tensor],
-        density_score: Optional[torch.Tensor] = None
+        density_score: Optional[torch.Tensor] = None,
+        nli_scores: Optional[Dict[str, torch.Tensor]] = None,
+        prm_scores: Optional[Dict[str, torch.Tensor]] = None
     ) -> torch.Tensor:
-        """
-        Extract feature vector from component scores.
-
-        Args:
-            internal_scores: Internal coherence scores
-            cross_modal_scores: Cross-modal scores
-            density_score: Optional density score
-
-        Returns:
-            Feature vector
-        """
+        
         features = [
             internal_scores['overall'],
             internal_scores['smoothness'],
             internal_scores['goal_directedness'],
             internal_scores['semantic_density'],
             cross_modal_scores['overall'],
-            cross_modal_scores['alignment'],
+            cross_modal_scores.get('alignment', torch.tensor(0.0)),
         ]
 
-        # Add contrastive if available
         if 'contrastive_score' in cross_modal_scores:
             features.append(cross_modal_scores['contrastive_score'])
 
-        # Add per-step stats
         if 'per_step_coherence' in cross_modal_scores:
             per_step = cross_modal_scores['per_step_coherence']
+            features.extend([per_step.mean(), per_step.std(), per_step.min()])
+        
+        # Add NLI Features
+        if nli_scores:
             features.extend([
-                per_step.mean(),
-                per_step.std(),
-                per_step.min()
+                nli_scores['overall'],
+                nli_scores['cumulative_step_nli'],
+                nli_scores['goal_nli']
+            ])
+            
+        # Add PRM Features
+        if prm_scores:
+            features.extend([
+                prm_scores['overall'],
+                prm_scores['min_step_reward']
             ])
 
-        # Pad to fixed size
-        while len(features) < 10:
-            features.append(torch.tensor(0.0))
+        # Pad to fixed size (e.g., 15)
+        while len(features) < 15:
+            features.append(torch.tensor(0.0).to(features[0].device if isinstance(features[0], torch.Tensor) else 'cpu'))
 
-        return torch.stack(features[:10])
+        return torch.stack(features[:15])
 
     def forward(
         self,
         step_embeddings: torch.Tensor,
         modal_embeddings: Optional[torch.Tensor] = None,
-        image_embeddings: Optional[torch.Tensor] = None,  # Backward compatibility
+        image_embeddings: Optional[torch.Tensor] = None,
         question_embedding: Optional[torch.Tensor] = None,
         answer_embedding: Optional[torch.Tensor] = None,
         negative_modal_embeddings: Optional[torch.Tensor] = None,
-        negative_image_embeddings: Optional[torch.Tensor] = None  # Backward compatibility
+        negative_image_embeddings: Optional[torch.Tensor] = None,
+        # --- NEW TEXT PARAMETERS ---
+        text_steps: Optional[List[str]] = None,
+        text_query: Optional[str] = None,
+        text_final_answer: Optional[str] = None
     ) -> Dict[str, torch.Tensor]:
-        """
-        Compute confidence score for a chain.
 
-        Args:
-            step_embeddings: (num_steps, embed_dim)
-            modal_embeddings: (num_modals, embed_dim) - can be image, audio, or other modality
-            image_embeddings: (DEPRECATED) Use modal_embeddings instead
-            question_embedding: Optional question embedding
-            answer_embedding: Optional answer embedding
-            negative_modal_embeddings: Optional negative samples
-            negative_image_embeddings: (DEPRECATED) Use negative_modal_embeddings instead
-
-        Returns:
-            Dictionary with confidence scores and components
-        """
-        # Backward compatibility: support old image_embeddings parameter
         if modal_embeddings is None and image_embeddings is not None:
             modal_embeddings = image_embeddings
         if negative_modal_embeddings is None and negative_image_embeddings is not None:
@@ -150,7 +145,7 @@ class ChainConfidenceScorer(nn.Module):
 
         results = {}
 
-        # Internal coherence
+        # 1. Internal coherence (Embeddings)
         internal_scores = self.internal_metric(
             step_embeddings=step_embeddings,
             question_embedding=question_embedding,
@@ -158,7 +153,7 @@ class ChainConfidenceScorer(nn.Module):
         )
         results['internal'] = internal_scores
 
-        # Cross-modal coherence
+        # 2. Cross-modal coherence
         cross_modal_scores = self.cross_modal_metric(
             step_embeddings=step_embeddings,
             modal_embeddings=modal_embeddings,
@@ -166,18 +161,27 @@ class ChainConfidenceScorer(nn.Module):
         )
         results['cross_modal'] = cross_modal_scores
 
-        # Density score (if model available)
+        # 3. Density score
         density_score = None
         if self.density_model is not None:
-            # Compute density over the chain
             density_score = self.density_model(step_embeddings)
             results['density'] = density_score
 
+        # 4. Text-based Logical Entailment (NLI)
+        nli_scores = None
+        if self.nli_metric is not None and text_steps is not None:
+            nli_scores = self.nli_metric(steps=text_steps, final_answer=text_final_answer)
+            results['nli'] = nli_scores
+
+        # 5. Text-based PRM Reasoning
+        prm_scores = None
+        if self.prm_metric is not None and text_steps is not None and text_query is not None:
+            prm_scores = self.prm_metric(query=text_query, steps=text_steps)
+            results['prm'] = prm_scores
+
         # Extract features
         features = self.compute_features(
-            internal_scores,
-            cross_modal_scores,
-            density_score
+            internal_scores, cross_modal_scores, density_score, nli_scores, prm_scores
         )
         results['features'] = features
 
@@ -187,16 +191,16 @@ class ChainConfidenceScorer(nn.Module):
         else:
             weights = self.weights
 
-        # Combine scores
+        # Combine scores (Fallback to neutral 0.5 if component is missing)
         component_scores = torch.stack([
-            internal_scores['overall'],
-            cross_modal_scores['overall'],
-            density_score if density_score is not None else torch.tensor(0.5)
+            internal_scores['overall'].to(weights.device),
+            cross_modal_scores['overall'].to(weights.device),
+            density_score.to(weights.device) if density_score is not None else torch.tensor(0.5, device=weights.device),
+            nli_scores['overall'].to(weights.device) if nli_scores is not None else torch.tensor(0.5, device=weights.device),
+            prm_scores['overall'].to(weights.device) if prm_scores is not None else torch.tensor(0.5, device=weights.device)
         ])
 
         confidence = torch.sum(weights * component_scores)
-
-        # Ensure in [0, 1] range
         confidence = torch.clamp(confidence, 0.0, 1.0)
 
         results['confidence'] = confidence
@@ -211,7 +215,11 @@ class ChainConfidenceScorer(nn.Module):
         batch_image_embeddings: Optional[List[torch.Tensor]] = None,  # Backward compatibility
         batch_question_embeddings: Optional[List[torch.Tensor]] = None,
         batch_answer_embeddings: Optional[List[torch.Tensor]] = None,
-        batch_negative_embeddings: Optional[List[torch.Tensor]] = None
+        batch_negative_embeddings: Optional[List[torch.Tensor]] = None,
+        # --- NEW TEXT PARAMETERS ---
+        batch_steps: Optional[List[List[str]]] = None,
+        batch_query: Optional[List[str]] = None,
+        batch_final_answer: Optional[List[str]] = None
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Compute confidence for a batch of chains.
@@ -258,7 +266,10 @@ class ChainConfidenceScorer(nn.Module):
                 modal_embeddings=batch_modal_embeddings[i],
                 question_embedding=question_emb,
                 answer_embedding=answer_emb,
-                negative_modal_embeddings=neg_emb
+                negative_modal_embeddings=neg_emb,
+                text_steps=batch_steps[i],
+                text_query=batch_query[i],
+                text_final_answer=batch_final_answer[i]
             )
             results.append(result)
 
@@ -285,6 +296,7 @@ class AdaptiveConfidenceScorer(nn.Module):
             num_reasoning_types: Number of reasoning task types
             embedding_dim: Embedding dimensionality
         """
+        raise NotImplementedError()
         super().__init__()
         self.base_scorer = base_scorer
 
