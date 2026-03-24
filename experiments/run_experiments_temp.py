@@ -623,6 +623,7 @@ def load_embeddings_from_path(
     embeddings_path: str,
     samples: List,
     device: str,
+    cots: Optional[List] = None,
     logger: Optional[logging.Logger] = None,
 ) -> List[List[Dict[str, torch.Tensor]]]:
 
@@ -635,7 +636,7 @@ def load_embeddings_from_path(
             logger.info(f"Loading embeddings from directory {embeddings_path}...")
 
         embeddings = []
-        for sample in samples:
+        for idx, sample in enumerate(samples):
             embedding_file = path / f"{sample.id}.json"
 
             if not embedding_file.exists():
@@ -648,8 +649,9 @@ def load_embeddings_from_path(
             with open(embedding_file, "r") as f:
                 sample_embeddings_data = json.load(f)
 
+            sample_cots = cots[idx] if cots else None
             sample_list = []
-            for chain_emb in sample_embeddings_data:
+            for chain_idx, chain_emb in enumerate(sample_embeddings_data):
                 chain_dict = {
                     k: (
                         torch.tensor(v).to(device)
@@ -658,6 +660,18 @@ def load_embeddings_from_path(
                     )
                     for k, v in chain_emb.items()
                 }
+                # --- BACKWARD COMPATIBILITY INJECTION ---
+                if (
+                    "text_steps" not in chain_dict
+                    and sample_cots
+                    and chain_idx < len(sample_cots)
+                ):
+                    chain_dict["text_steps"] = sample_cots[chain_idx].steps
+                    chain_dict["text_query"] = sample.question
+                    chain_dict["text_final_answer"] = sample_cots[
+                        chain_idx
+                    ].final_answer
+
                 sample_list.append(chain_dict)
 
             embeddings.append(sample_list)
@@ -673,9 +687,10 @@ def load_embeddings_from_path(
             embeddings_data = json.load(f)
 
         embeddings = []
-        for sample_embs in embeddings_data:
+        for idx, sample_embs in enumerate(embeddings_data):
+            sample_cots = cots[idx] if cots else None
             sample_list = []
-            for chain_emb in sample_embs:
+            for chain_idx, chain_emb in enumerate(sample_embs):
                 chain_dict = {
                     k: (
                         torch.tensor(v).to(device)
@@ -684,6 +699,18 @@ def load_embeddings_from_path(
                     )
                     for k, v in chain_emb.items()
                 }
+                # --- BACKWARD COMPATIBILITY INJECTION ---
+                if (
+                    "text_steps" not in chain_dict
+                    and sample_cots
+                    and chain_idx < len(sample_cots)
+                ):
+                    chain_dict["text_steps"] = sample_cots[chain_idx].steps
+                    chain_dict["text_query"] = sample.question
+                    chain_dict["text_final_answer"] = sample_cots[
+                        chain_idx
+                    ].final_answer
+
                 sample_list.append(chain_dict)
             embeddings.append(sample_list)
 
@@ -1001,8 +1028,9 @@ def main():
                 with open(embedding_file, "r") as f:
                     sample_embeddings_data = json.load(f)
 
+                sample_chains = cots[idx] if cots else None
                 sample_embeddings = []
-                for chain_emb in sample_embeddings_data:
+                for chain_idx, chain_emb in enumerate(sample_embeddings_data):
                     chain_dict = {
                         k: (
                             torch.tensor(v).to(device)
@@ -1011,6 +1039,19 @@ def main():
                         )
                         for k, v in chain_emb.items()
                     }
+
+                    # --- BACKWARD COMPATIBILITY INJECTION ---
+                    if (
+                        "text_steps" not in chain_dict
+                        and sample_chains
+                        and chain_idx < len(sample_chains)
+                    ):
+                        chain_dict["text_steps"] = sample_chains[chain_idx].steps
+                        chain_dict["text_query"] = sample.question
+                        chain_dict["text_final_answer"] = sample_chains[
+                            chain_idx
+                        ].final_answer
+
                     sample_embeddings.append(chain_dict)
 
                 if args.num_chains_for_scoring is not None:
@@ -1067,7 +1108,7 @@ def main():
             )
         elif args.load_embeddings:
             embeddings = load_embeddings_from_path(
-                args.load_embeddings, samples, device, logger
+                args.load_embeddings, samples, device, cots, logger
             )
             if args.num_chains_for_scoring is not None:
                 embeddings = [
