@@ -623,20 +623,38 @@ def load_embeddings_from_path(
     embeddings_path: str,
     samples: List,
     device: str,
-    cots: Optional[List] = None,
     logger: Optional[logging.Logger] = None,
 ) -> List[List[Dict[str, torch.Tensor]]]:
 
     path = Path(embeddings_path)
-    # Fields that should NOT be converted to tensors
-    text_fields = ["text_steps", "text_query", "text_final_answer", "modality_type"]
+    text_fields = {"text_steps", "text_query", "text_final_answer", "modality_type"}
+
+    # --- NEW: Recursive helper to restore tensors from dictionaries/lists ---
+    def restore_tensors(obj, key_name=None):
+        # Base case: text metadata fields stay exactly as they are
+        if key_name in text_fields:
+            return obj
+
+        if isinstance(obj, dict):
+            # Recursively restore values in nested dictionaries
+            return {k: restore_tensors(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            # Convert numerical lists back to tensors and push to device.
+            # (Safety check: ignore empty lists or lists of strings)
+            if len(obj) == 0 or isinstance(obj[0], str):
+                return obj
+            return torch.tensor(obj, dtype=torch.float32).to(device)
+
+        return obj
+
+    # ------------------------------------------------------------------------
 
     if path.is_dir():
         if logger:
             logger.info(f"Loading embeddings from directory {embeddings_path}...")
 
         embeddings = []
-        for idx, sample in enumerate(samples):
+        for sample in samples:
             embedding_file = path / f"{sample.id}.json"
 
             if not embedding_file.exists():
@@ -649,29 +667,12 @@ def load_embeddings_from_path(
             with open(embedding_file, "r") as f:
                 sample_embeddings_data = json.load(f)
 
-            sample_cots = cots[idx] if cots else None
             sample_list = []
-            for chain_idx, chain_emb in enumerate(sample_embeddings_data):
+            for chain_emb in sample_embeddings_data:
+                # Use the recursive helper here
                 chain_dict = {
-                    k: (
-                        torch.tensor(v).to(device)
-                        if isinstance(v, list) and k not in text_fields
-                        else v
-                    )
-                    for k, v in chain_emb.items()
+                    k: restore_tensors(v, key_name=k) for k, v in chain_emb.items()
                 }
-                # --- BACKWARD COMPATIBILITY INJECTION ---
-                if (
-                    "text_steps" not in chain_dict
-                    and sample_cots
-                    and chain_idx < len(sample_cots)
-                ):
-                    chain_dict["text_steps"] = sample_cots[chain_idx].steps
-                    chain_dict["text_query"] = sample.question
-                    chain_dict["text_final_answer"] = sample_cots[
-                        chain_idx
-                    ].final_answer
-
                 sample_list.append(chain_dict)
 
             embeddings.append(sample_list)
@@ -687,30 +688,13 @@ def load_embeddings_from_path(
             embeddings_data = json.load(f)
 
         embeddings = []
-        for idx, sample_embs in enumerate(embeddings_data):
-            sample_cots = cots[idx] if cots else None
+        for sample_embs in embeddings_data:
             sample_list = []
-            for chain_idx, chain_emb in enumerate(sample_embs):
+            for chain_emb in sample_embs:
+                # Use the recursive helper here too
                 chain_dict = {
-                    k: (
-                        torch.tensor(v).to(device)
-                        if isinstance(v, list) and k not in text_fields
-                        else v
-                    )
-                    for k, v in chain_emb.items()
+                    k: restore_tensors(v, key_name=k) for k, v in chain_emb.items()
                 }
-                # --- BACKWARD COMPATIBILITY INJECTION ---
-                if (
-                    "text_steps" not in chain_dict
-                    and sample_cots
-                    and chain_idx < len(sample_cots)
-                ):
-                    chain_dict["text_steps"] = sample_cots[chain_idx].steps
-                    chain_dict["text_query"] = sample.question
-                    chain_dict["text_final_answer"] = sample_cots[
-                        chain_idx
-                    ].final_answer
-
                 sample_list.append(chain_dict)
             embeddings.append(sample_list)
 
@@ -1030,14 +1014,22 @@ def main():
 
                 sample_chains = cots[idx] if cots else None
                 sample_embeddings = []
+
+                def restore_tensors(obj, key_name=None):
+                    if key_name in text_fields:
+                        return obj
+                    if isinstance(obj, dict):
+                        return {k: restore_tensors(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        if len(obj) == 0 or isinstance(obj[0], str):
+                            return obj
+                        return torch.tensor(obj, dtype=torch.float32).to(device)
+                    return obj
+
                 for chain_idx, chain_emb in enumerate(sample_embeddings_data):
+
                     chain_dict = {
-                        k: (
-                            torch.tensor(v).to(device)
-                            if isinstance(v, list) and k not in text_fields
-                            else v
-                        )
-                        for k, v in chain_emb.items()
+                        k: restore_tensors(v, key_name=k) for k, v in chain_emb.items()
                     }
 
                     # --- BACKWARD COMPATIBILITY INJECTION ---
