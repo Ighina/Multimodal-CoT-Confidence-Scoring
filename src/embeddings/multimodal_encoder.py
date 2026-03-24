@@ -143,6 +143,155 @@ class MultimodalEncoder(nn.Module):
 
         return image_features
 
+    def encode_video(
+        self,
+        video_paths: Union[str, List[str]],
+        frame_interval: int = 8,
+        max_frames: Optional[int] = 64,
+        pooling: str = "mean",
+        normalize: bool = True,
+        batch_size: int = 16,
+    ) -> torch.Tensor:
+        """
+        Encode video(s) to embeddings by extracting frames and pooling
+        per-frame CLIP embeddings.
+
+        Args:
+            video_paths:     Single video file path or list of paths.
+            frame_interval:  Extract one frame every N frames (default 8).
+                            Lower = denser sampling; higher = faster but coarser.
+            max_frames:      Cap the number of frames sampled per video.
+                            None means no cap.
+            pooling:         How to collapse per-frame embeddings into one vector.
+                            "mean"  – average over frames (default, robust)
+                            "max"   – element-wise max (captures salient moments)
+                            "first" – first frame only (cheap scene-level proxy)
+            normalize:       L2-normalise the final video embedding.
+            batch_size:      How many frames to pass through encode_images at once.
+                            Reduce if you hit GPU OOM on long videos.
+
+        Returns:
+            torch.Tensor of shape (embedding_dim,) for a single path, or
+            (num_videos, embedding_dim) for a list of paths.
+        """
+        try:
+            import cv2
+        except ImportError:
+            raise ImportError(
+                "Video encoding requires opencv-python. "
+                "Install with: pip install opencv-python"
+            )
+
+        if isinstance(video_paths, str):
+            video_paths = [video_paths]
+            return_single = True
+        else:
+            return_single = False
+
+        if pooling not in ("mean", "max", "first"):
+            raise ValueError(
+                f"pooling must be 'mean', 'max', or 'first', got '{pooling}'"
+            )
+
+        video_embeddings: List[torch.Tensor] = []
+
+        for path in video_paths:
+            frames = self._extract_frames(
+                path,
+                frame_interval=frame_interval,
+                max_frames=max_frames,
+            )
+
+            if not frames:
+                raise RuntimeError(
+                    f"Could not extract any frames from video: {path!r}. "
+                    "Check that the file exists and is a supported format."
+                )
+
+            # Encode frames in batches to avoid OOM on long videos.
+            # normalize=False here so pooling operates on raw features;
+            # we normalise the pooled vector at the end instead.
+            frame_embeds: List[torch.Tensor] = []
+            for i in range(0, len(frames), batch_size):
+                chunk = frames[i : i + batch_size]
+                embeds = self.encode_images(chunk, normalize=False)  # (B, D)
+                # encode_images may return (D,) for a single image; keep it 2-D
+                if embeds.dim() == 1:
+                    embeds = embeds.unsqueeze(0)
+                frame_embeds.append(embeds)
+
+            # (num_frames, D)
+            all_frame_embeds = torch.cat(frame_embeds, dim=0)
+
+            # Temporal pooling
+            if pooling == "mean":
+                video_embed = all_frame_embeds.mean(dim=0)
+            elif pooling == "max":
+                video_embed, _ = all_frame_embeds.max(dim=0)
+            else:  # "first"
+                video_embed = all_frame_embeds[0]
+
+            if normalize:
+                video_embed = torch.nn.functional.normalize(
+                    video_embed.unsqueeze(0), p=2, dim=-1
+                ).squeeze(0)
+
+            video_embeddings.append(video_embed)
+
+        result = torch.stack(video_embeddings, dim=0)  # (N, D)
+
+        if return_single:
+            return result[0]
+
+        return result
+
+    def _extract_frames(
+        self,
+        video_path: str,
+        frame_interval: int,
+        max_frames: Optional[int],
+    ) -> List[Image.Image]:
+        """
+        Extract frames from a video file using OpenCV.
+
+        Args:
+            video_path:     Path to the video file.
+            frame_interval: Sample one frame every N frames.
+            max_frames:     Maximum number of frames to return (None = no limit).
+
+        Returns:
+            List of PIL Images.
+        """
+        import cv2  # already checked by caller
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError(f"OpenCV could not open video file: {video_path!r}")
+
+        frames: List[Image.Image] = []
+        frame_index = 0
+
+        try:
+            while True:
+                ret, bgr_frame = cap.read()
+                if not ret:
+                    break
+
+                if frame_index % frame_interval == 0:
+                    # OpenCV uses BGR; PIL / CLIP expect RGB
+                    rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+                    pil_image = Image.fromarray(rgb_frame)
+                    frames.append(pil_image)
+
+                    if max_frames is not None and len(frames) >= max_frames:
+                        break
+
+                frame_index += 1
+        finally:
+            cap.release()
+
+        return frames
+
     def encode_multimodal(
         self, texts: List[str], images: List[Image.Image], normalize: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -188,25 +337,18 @@ class MultimodalEncoder(nn.Module):
         self,
         texts: Optional[List[str]] = None,
         images: Optional[List[Image.Image]] = None,
+        video_paths: Optional[List[str]] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Forward pass for encoding.
-
-        Args:
-            texts: Optional list of texts
-            images: Optional list of images
-
-        Returns:
-            Embeddings based on what's provided
-        """
         if texts is not None and images is not None:
             return self.encode_multimodal(texts, images)
         elif texts is not None:
             return self.encode_text(texts)
         elif images is not None:
             return self.encode_images(images)
+        elif video_paths is not None:
+            return self.encode_video(video_paths)
         else:
-            raise ValueError("Must provide either texts or images")
+            raise ValueError("Must provide texts, images, or video_paths")
 
 
 class AudioEncoder(nn.Module):
