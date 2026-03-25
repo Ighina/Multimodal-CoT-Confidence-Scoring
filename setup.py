@@ -36,22 +36,30 @@ setup(
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
     ],
     python_requires=">=3.8",
     install_requires=requirements,
     extras_require={
         "dev": [
-            "pytest>=7.0",
-            "black>=22.0",
-            "flake8>=4.0",
-            "mypy>=0.950",
+            "pytest>=7.4",
+            "black>=23.0",
+            "flake8>=6.0",
+            "mypy>=1.0",
             "jupyter>=1.0",
+        ],
+        "vllm": [
+            "vllm>=0.4.0",
+        ],
+        "gemini": [
+            "google-genai>=1.0.0",
         ],
     },
     entry_points={
         "console_scripts": [
             "run-cot-experiment=experiments.run_experiment:main",
             "run-ablation=experiments.ablation_study:main",
+            "run-evaluation=experiments.run_evaluation:main",
         ],
     },
 )
