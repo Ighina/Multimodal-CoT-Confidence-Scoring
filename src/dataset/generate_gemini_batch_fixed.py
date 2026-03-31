@@ -149,7 +149,7 @@ def transform(sample, response, key):
         "metadata": {
             "temperature":        1.0,
             "top_p":              0.7,
-            "num_images":         len(getattr(getattr(sample, "image_paths", None) or []),
+            "num_images":         len(getattr(sample, "image_paths", None) or []),
             "num_audios":         len(getattr(sample, "audio_paths", None) or []),
             "num_videos":         len(getattr(sample, "video_paths", None) or []),
             "question":           getattr(sample, "question", ""),
