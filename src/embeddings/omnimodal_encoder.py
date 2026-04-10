@@ -1,550 +1,377 @@
 """
-Omnimodal encoder for joint text-image-video-audio embeddings.
-
-Uses Qwen2.5-Omni as the backbone, which natively processes all modalities
-in a single forward pass — no separate projectors or alignment losses needed.
+Omnimodal encoder for joint text-image-audio-video embeddings.
+Based on LCO-Embedding and NVIDIA Omni-Embed models.
 """
 
-from __future__ import annotations
-
-from typing import Dict, List, Optional, Tuple, Union
-
-import numpy as np
+from typing import Dict, List, Optional, Union, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-
-# ---------------------------------------------------------------------------
-# Type aliases (mirror conventions from the rest of the codebase)
-# ---------------------------------------------------------------------------
-
-# Raw audio: 1-D float32 numpy array at any sample rate
-AudioArray = np.ndarray
-
-# A single multimodal "document": a list of content dicts that can mix
-# text, image, video, and audio entries in any order.
-#
-# Example:
-#   [
-#       {"type": "text",  "text": "Describe this clip."},
-#       {"type": "video", "video": "/path/to/clip.mp4"},
-#       {"type": "audio", "audio": "/path/to/sound.wav"},
-#   ]
-ContentList = List[Dict]
+from transformers import AutoModel, AutoProcessor
+from qwen_omni_utils import process_mm_info
 
 
 class OmnimodalEncoder(nn.Module):
     """
-    Encode arbitrary combinations of text, images, video, and audio into a
-    single embedding per input document.
+    Encode multimodal content (text, images, audio, video) into unified embeddings.
 
-    Backbone: Qwen2.5-Omni-Thinker (LCO-Embedding/LCO-Embedding-Omni-7B or
-    any compatible checkpoint).  All modalities are processed jointly by the
-    same transformer — there is no late-fusion step.
-
-    The embedding is the hidden state of the *last token* of the last layer,
-    following the usage shown in the reference notebook.
-
-    Typical usage
-    -------------
-    >>> encoder = OmnimodalEncoder()
-    >>>
-    >>> # Pure text
-    >>> emb = encoder.encode([{"type": "text", "text": "passage: hello world"}])
-    >>>
-    >>> # Text + video
-    >>> emb = encoder.encode([
-    ...     {"type": "text",  "text": "passage: a person drawing"},
-    ...     {"type": "video", "video": "draw.mp4"},
-    ... ])
-    >>>
-    >>> # Batch of documents (each document is its own content list)
-    >>> embs = encoder.encode_batch([
-    ...     [{"type": "text", "text": "passage: doc one"}],
-    ...     [{"type": "text", "text": "passage: doc two"},
-    ...      {"type": "image", "image": "/path/img.jpg"}],
-    ... ])
+    Supports:
+    - LCO-Embedding/LCO-Embedding-Omni-7B
+    - nvidia/omni-embed-nemotron-3b
     """
-
-    # Prefix that the reference model was trained with for passage encoding.
-    # Override via the `prefix` argument to __init__ if needed.
-    DEFAULT_PREFIX = "passage: "
 
     def __init__(
         self,
         model_name: str = "LCO-Embedding/LCO-Embedding-Omni-7B",
         device: str = "cuda",
-        torch_dtype: torch.dtype = torch.bfloat16,
-        max_pixels: Optional[int] = None,
+        base_url: Optional[str] = None,
+        torch_dtype = torch.bfloat16,
         use_audio_in_video: bool = True,
-        prefix: str = DEFAULT_PREFIX,
-        device_map: Optional[str] = "auto",
     ):
         """
-        Initialise the omnimodal encoder.
+        Initialize omnimodal encoder.
 
         Args:
-            model_name:        HuggingFace repo or local path for the
-                               Qwen2.5-Omni-compatible checkpoint.
-            device:            Target device when *not* using device_map
-                               (e.g. "cuda", "cpu").  Ignored when
-                               device_map is set.
-            torch_dtype:       Weight dtype. bfloat16 is the default used
-                               in the reference notebook and recommended for
-                               modern GPUs.
-            max_pixels:        Optional pixel cap for image/video inputs
-                               (e.g. 1280*28*28).  Passed straight to the
-                               processor.  Reduces VRAM at the cost of
-                               resolution.
-            use_audio_in_video: Whether to extract and encode the audio
-                               track embedded in video files.  Mirrors the
-                               `use_audio_in_video` flag in process_mm_info.
-            prefix:            Text prefix prepended to the *first* text
-                               chunk of every document (default "passage: ").
-                               Pass an empty string to disable.
-            device_map:        Passed to from_pretrained for multi-GPU /
-                               CPU-offload layouts.  Set to None to use
-                               the `device` argument instead.
+            model_name: Model name or path (LCO or NVIDIA model)
+            device: Device to run on
+            base_url: Base URL for loading media files
+            torch_dtype: Torch dtype for model
+            use_audio_in_video: Whether to extract audio from video
         """
         super().__init__()
-
         self.model_name = model_name
         self.device = device
-        self.torch_dtype = torch_dtype
-        self.max_pixels = max_pixels
+        self.base_url = base_url or "https://huggingface.co/datasets/meituan-longcat/UNO-Bench/resolve/main/"
         self.use_audio_in_video = use_audio_in_video
-        self.prefix = prefix
-        self.device_map = device_map
+        self.torch_dtype = torch_dtype
 
         self._load_model()
 
-    # ------------------------------------------------------------------
-    # Private: model loading
-    # ------------------------------------------------------------------
-
-    def _load_model(self) -> None:
-        """Load the Qwen2.5-Omni processor and model weights."""
-        try:
-            from transformers import (
-                Qwen2_5OmniProcessor,
-                Qwen2_5OmniThinkerForConditionalGeneration,
+    def _load_model(self):
+        """Load model and processor."""
+        if "nvidia" in self.model_name.lower():
+            self.model = AutoModel.from_pretrained(
+                self.model_name,
+                torch_dtype=self.torch_dtype,
+                attn_implementation="eager",
+                trust_remote_code=True,
+                device_map="auto"
             )
-        except ImportError:
-            raise ImportError(
-                "OmnimodalEncoder requires the Qwen2.5-Omni transformers "
-                "integration.  Install with:\n"
-                "  pip install transformers>=4.51.0"
-            )
-
-        try:
-            from qwen_omni_utils import process_mm_info  # noqa: F401 — validate early
-        except ImportError:
-            raise ImportError(
-                "OmnimodalEncoder requires qwen-omni-utils.  Install with:\n"
-                "  pip install qwen-omni-utils"
-            )
-
-        # Processor -------------------------------------------------------
-        processor_kwargs = {}
-        if self.max_pixels is not None:
-            processor_kwargs["max_pixels"] = self.max_pixels
-
-        self.processor = Qwen2_5OmniProcessor.from_pretrained(
-            self.model_name, **processor_kwargs
-        )
-
-        # Model -----------------------------------------------------------
-        model_kwargs: Dict = {"torch_dtype": self.torch_dtype}
-        if self.device_map is not None:
-            model_kwargs["device_map"] = self.device_map
+            self.model_type = "nvidia"
         else:
-            model_kwargs["device_map"] = None
+            from transformers import Qwen2_5OmniThinkerForConditionalGeneration, Qwen2_5OmniProcessor
+            self.processor = Qwen2_5OmniProcessor.from_pretrained(self.model_name)
+            self.model = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
+                self.model_name,
+                torch_dtype=self.torch_dtype,
+                device_map="auto"
+            )
+            self.model_type = "lco"
 
-        self.model = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
-            self.model_name, **model_kwargs
-        )
+        self.processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
+        self.model.eval()
 
-        if self.device_map is None:
-            self.model = self.model.to(self.device)
+        self.embedding_dim = self._get_embedding_dim()
 
-        # Derive embedding dimension from model config --------------------
-        self.embedding_dim: int = self.model.config.hidden_size
+    def _get_embedding_dim(self) -> int:
+        """Get embedding dimension from model."""
+        if self.model_type == "nvidia":
+            return 2048
+        else:
+            return 3584
 
-    # ------------------------------------------------------------------
-    # Private: document preparation
-    # ------------------------------------------------------------------
-
-    def _apply_prefix(self, content: ContentList) -> ContentList:
-        """
-        Prepend self.prefix to the first text entry in a content list.
-
-        If there is no text entry and a prefix is set, a text entry is
-        inserted at position 0.  This mirrors how the reference notebook
-        prepends "passage: " to every document.
-        """
-        if not self.prefix:
-            return content
-
-        content = list(content)  # shallow copy — don't mutate caller's list
-
-        for i, item in enumerate(content):
-            if item.get("type") == "text":
-                content[i] = {**item, "text": self.prefix + item["text"]}
-                return content
-
-        # No text entry found — insert one at the front
-        content.insert(0, {"type": "text", "text": self.prefix})
-        return content
-
-    def _build_conversation(self, content: ContentList) -> List[Dict]:
-        """
-        Wrap a content list in the single-turn user-message format that
-        apply_chat_template expects.
-        """
-        return [{"role": "user", "content": content}]
-
-    # ------------------------------------------------------------------
-    # Private: forward through the model
-    # ------------------------------------------------------------------
-
-    def _forward_conversations(
+    def create_messages(
         self,
-        conversations: List[List[Dict]],
-        normalize: bool,
-    ) -> torch.Tensor:
+        question: str,
+        audios: Optional[Dict[str, str]] = None,
+        images: Optional[Dict[str, str]] = None,
+        videos: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, List]:
         """
-        Run a batch of conversations through the model and return embeddings.
+        Create message formats for different modality combinations.
 
         Args:
-            conversations: List of single-turn conversation dicts, one per
-                           document.
-            normalize:     Whether to L2-normalise the output embeddings.
+            question: Question text
+            audios: Dictionary of audio paths
+            images: Dictionary of image paths
+            videos: Dictionary of video paths
 
         Returns:
-            Tensor of shape (batch_size, embedding_dim).
+            Dictionary with message formats for all, audio-only, image-only, video-only
         """
-        from qwen_omni_utils import process_mm_info
+        messages = {
+            "role": "user",
+            "content": [{"type": "text", "text": question}]
+        }
+        messages_audio = {
+            "role": "user",
+            "content": [{"type": "text", "text": question}]
+        }
+        messages_video = {
+            "role": "user",
+            "content": [{"type": "text", "text": question}]
+        }
+        messages_image = {
+            "role": "user",
+            "content": [{"type": "text", "text": question}]
+        }
 
-        # 1. Render chat templates ----------------------------------------
-        texts = self.processor.apply_chat_template(
-            conversations,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        if audios:
+            for key, audio in audios.items():
+                if audio is not None:
+                    audio_url = self.base_url + audio if not audio.startswith("http") else audio
+                    messages["content"].append({"type": "audio", "audio": audio_url})
+                    messages_audio["content"].append({"type": "audio", "audio": audio_url})
 
-        # 2. Extract multimodal side-inputs --------------------------------
-        audio_inputs, image_inputs, video_inputs = process_mm_info(
-            conversations,
-            use_audio_in_video=self.use_audio_in_video,
-        )
+        if images:
+            for key, image in images.items():
+                if image is not None:
+                    image_url = self.base_url + image if not image.startswith("http") else image
+                    messages["content"].append({"type": "image", "image": image_url})
+                    messages_image["content"].append({"type": "image", "image": image_url})
 
-        # 3. Tokenise + build pixel/audio tensors --------------------------
-        inputs = self.processor(
-            text=texts,
-            audio=audio_inputs,
-            images=image_inputs,
-            videos=video_inputs,
-            return_tensors="pt",
-            padding=True,
-        )
+        if videos:
+            for key, video in videos.items():
+                if video is not None:
+                    video_url = self.base_url + video if not video.startswith("http") else video
+                    messages["content"].append({"type": "video", "video": video_url})
+                    messages_video["content"].append({"type": "video", "video": video_url})
 
-        target_device = (
-            next(self.model.parameters()).device
-            if self.device_map is not None
-            else torch.device(self.device)
-        )
-        inputs = inputs.to(target_device)
+        return {
+            "all": [[messages]],
+            "image": [[messages_image]],
+            "audio": [[messages_audio]],
+            "video": [[messages_video]]
+        }
 
-        # 4. Model forward — extract last-layer last-token hidden state ----
-        with torch.no_grad():
-            hidden_states = self.model(
-                **inputs,
-                output_hidden_states=True,
-                return_dict=True,
-            ).hidden_states[
-                -1
-            ]  # (batch, seq_len, hidden)
+    def _run_model(self, inputs: Dict) -> torch.Tensor:
+        """
+        Run model inference and extract embeddings.
 
-        # Last token of each sequence in the batch
-        embeddings = hidden_states[:, -1, :]  # (batch, hidden)
+        Args:
+            inputs: Processed inputs dictionary
 
-        if normalize:
-            embeddings = F.normalize(embeddings, p=2, dim=-1)
+        Returns:
+            Embedding tensor
+        """
+        inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                  for k, v in inputs.items()}
 
-        return embeddings
+        with torch.inference_mode():
+            if self.model_type == "nvidia":
+                last_hidden_states = self.model(
+                    **inputs,
+                    output_hidden_states=True
+                ).hidden_states[-1]
 
-    # ------------------------------------------------------------------
-    # Public: single-document encoding
-    # ------------------------------------------------------------------
+                attention_mask = inputs["attention_mask"]
+                last_hidden_states_masked = last_hidden_states.masked_fill(
+                    ~attention_mask[..., None].bool(), 0.0
+                )
+                embedding = last_hidden_states_masked.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+                embedding = F.normalize(embedding, dim=-1)
+            else:
+                outputs = self.model(
+                    **inputs,
+                    output_hidden_states=True,
+                    return_dict=True
+                )
+                embedding = outputs.hidden_states[-1][:, -1, :]
+
+        embedding = embedding.detach().cpu()
+        torch.cuda.empty_cache()
+
+        return embedding
 
     def encode(
         self,
-        content: ContentList,
-        normalize: bool = True,
-    ) -> torch.Tensor:
+        messages: Dict[str, List],
+        audio_inputs: Optional[List] = None,
+        image_inputs: Optional[List] = None,
+        video_inputs: Optional[List] = None,
+    ) -> Dict[str, Optional[torch.Tensor]]:
         """
-        Encode a single multimodal document.
-
-        A document is a flat list of content dicts.  Each dict must have a
-        "type" key set to one of "text", "image", "video", or "audio", plus
-        the corresponding payload key:
-
-            {"type": "text",  "text": "some string"}
-            {"type": "image", "image": "/path/to/image.jpg"}
-            {"type": "video", "video": "/path/to/clip.mp4"}
-            {"type": "audio", "audio": "/path/to/sound.wav"}
-
-        Video URLs are also accepted wherever local paths are.
+        Encode multimodal content into embeddings.
 
         Args:
-            content:   List of content dicts (the multimodal document).
-            normalize: Whether to L2-normalise the embedding.
+            messages: Message formats for different modalities
+            audio_inputs: Processed audio inputs
+            image_inputs: Processed image inputs
+            video_inputs: Processed video inputs
 
         Returns:
-            1-D tensor of shape (embedding_dim,).
+            Dictionary with embeddings for each modality combination
         """
-        content = self._apply_prefix(content)
-        conversation = self._build_conversation(content)
-        embeddings = self._forward_conversations([conversation], normalize)
-        return embeddings[0]  # (D,)
+        multimodal_output = {
+            "audio": None,
+            "image": None,
+            "video": None,
+            "omnimodal": None
+        }
 
-    # ------------------------------------------------------------------
-    # Public: batch encoding
-    # ------------------------------------------------------------------
+        with torch.no_grad():
+            if self.model_type == "nvidia":
+                text_kwargs = {
+                    "truncation": True,
+                    "padding": True,
+                    "max_length": 204800,
+                }
+                videos_kwargs = {
+                    "min_pixels": 32*14*14,
+                    "max_pixels": 64*28*28,
+                    "use_audio_in_video": self.use_audio_in_video,
+                }
+                audio_kwargs = {"max_length": 2048000}
+            else:
+                text_kwargs = {}
+                videos_kwargs = {}
+                audio_kwargs = {}
 
-    def encode_batch(
+            if audio_inputs is not None and len(audio_inputs) > 0:
+                text = self.processor.apply_chat_template(
+                    messages["audio"],
+                    tokenize=False,
+                    add_generation_prompt=self.model_type == "lco"
+                )
+                inputs = self.processor(
+                    text=text,
+                    audio=audio_inputs,
+                    images=None,
+                    videos=None,
+                    return_tensors="pt",
+                    padding=True,
+                    text_kwargs=text_kwargs if text_kwargs else None,
+                    audio_kwargs=audio_kwargs if audio_kwargs else None,
+                )
+                multimodal_output["audio"] = self._run_model(inputs)
+
+            if image_inputs is not None and len(image_inputs) > 0:
+                text = self.processor.apply_chat_template(
+                    messages["image"],
+                    tokenize=False,
+                    add_generation_prompt=self.model_type == "lco"
+                )
+                inputs = self.processor(
+                    text=text,
+                    audio=None,
+                    images=image_inputs,
+                    videos=None,
+                    return_tensors="pt",
+                    padding=True,
+                    text_kwargs=text_kwargs if text_kwargs else None,
+                )
+                multimodal_output["image"] = self._run_model(inputs)
+
+            if video_inputs is not None and len(video_inputs) > 0:
+                text = self.processor.apply_chat_template(
+                    messages["video"],
+                    tokenize=False,
+                    add_generation_prompt=self.model_type == "lco"
+                )
+                inputs = self.processor(
+                    text=text,
+                    audio=None,
+                    images=None,
+                    videos=video_inputs,
+                    return_tensors="pt",
+                    padding=True,
+                    text_kwargs=text_kwargs if text_kwargs else None,
+                    videos_kwargs=videos_kwargs if videos_kwargs else None,
+                )
+                multimodal_output["video"] = self._run_model(inputs)
+
+            text = self.processor.apply_chat_template(
+                messages["all"],
+                tokenize=False,
+                add_generation_prompt=self.model_type == "lco"
+            )
+            inputs = self.processor(
+                text=text,
+                audio=audio_inputs,
+                images=image_inputs,
+                videos=video_inputs,
+                return_tensors="pt",
+                padding=True,
+                text_kwargs=text_kwargs if text_kwargs else None,
+                videos_kwargs=videos_kwargs if videos_kwargs else None,
+                audio_kwargs=audio_kwargs if audio_kwargs else None,
+            )
+            multimodal_output["omnimodal"] = self._run_model(inputs)
+
+        return multimodal_output
+
+    def encode_from_sample(
         self,
-        contents: List[ContentList],
-        normalize: bool = True,
-    ) -> torch.Tensor:
+        sample: Dict,
+    ) -> Dict[str, Optional[torch.Tensor]]:
         """
-        Encode a batch of multimodal documents in a single forward pass.
+        Encode from a sample dictionary (UNO-Bench format).
 
         Args:
-            contents:  List of content lists, one per document.
-            normalize: Whether to L2-normalise the embeddings.
+            sample: Sample dictionary with question, audios, images, videos
 
         Returns:
-            Tensor of shape (batch_size, embedding_dim).
+            Dictionary with embeddings for each modality combination
         """
-        conversations = [
-            self._build_conversation(self._apply_prefix(c)) for c in contents
-        ]
-        return self._forward_conversations(conversations, normalize)
-
-    # ------------------------------------------------------------------
-    # Public: modality-specific convenience helpers
-    # ------------------------------------------------------------------
-
-    def encode_text(
-        self,
-        texts: Union[str, List[str]],
-        normalize: bool = True,
-    ) -> torch.Tensor:
-        """
-        Encode plain text string(s).
-
-        Args:
-            texts:     Single string or list of strings.
-            normalize: Whether to L2-normalise the embeddings.
-
-        Returns:
-            Shape (D,) for a single string, (N, D) for a list.
-        """
-        if isinstance(texts, str):
-            return self.encode([{"type": "text", "text": texts}], normalize)
-
-        return self.encode_batch(
-            [[{"type": "text", "text": t}] for t in texts],
-            normalize,
+        messages = self.create_messages(
+            question=sample.get("question", ""),
+            audios=sample.get("audios", {}),
+            images=sample.get("images", {}),
+            videos=sample.get("videos", {})
         )
 
-    def encode_images(
-        self,
-        image_paths: Union[str, List[str]],
-        text_prompt: str = "",
-        normalize: bool = True,
-    ) -> torch.Tensor:
-        """
-        Encode image file(s), optionally accompanied by a text prompt.
+        try:
+            audio_inputs, image_inputs, video_inputs = process_mm_info(
+                messages["all"],
+                use_audio_in_video=self.use_audio_in_video
+            )
+        except Exception:
+            audio_inputs, image_inputs, video_inputs = process_mm_info(
+                messages["all"],
+                use_audio_in_video=False
+            )
 
-        Args:
-            image_paths:  Single path/URL or list of paths/URLs.
-            text_prompt:  Optional text to include alongside each image.
-                          The prefix is still applied on top of this.
-            normalize:    Whether to L2-normalise the embeddings.
-
-        Returns:
-            Shape (D,) for a single path, (N, D) for a list.
-        """
-
-        def _content(path: str) -> ContentList:
-            content: ContentList = [{"type": "image", "image": path}]
-            if text_prompt:
-                content.insert(0, {"type": "text", "text": text_prompt})
-            return content
-
-        if isinstance(image_paths, str):
-            return self.encode(_content(image_paths), normalize)
-
-        return self.encode_batch([_content(p) for p in image_paths], normalize)
-
-    def encode_videos(
-        self,
-        video_paths: Union[str, List[str]],
-        text_prompt: str = "",
-        normalize: bool = True,
-    ) -> torch.Tensor:
-        """
-        Encode video file(s), optionally accompanied by a text prompt.
-
-        Audio embedded in the video is included when use_audio_in_video=True
-        (the default), matching the reference notebook behaviour.
-
-        Args:
-            video_paths:  Single path/URL or list of paths/URLs.
-            text_prompt:  Optional text to include alongside each video.
-            normalize:    Whether to L2-normalise the embeddings.
-
-        Returns:
-            Shape (D,) for a single path, (N, D) for a list.
-        """
-
-        def _content(path: str) -> ContentList:
-            content: ContentList = [{"type": "video", "video": path}]
-            if text_prompt:
-                content.insert(0, {"type": "text", "text": text_prompt})
-            return content
-
-        if isinstance(video_paths, str):
-            return self.encode(_content(video_paths), normalize)
-
-        return self.encode_batch([_content(p) for p in video_paths], normalize)
-
-    def encode_audio(
-        self,
-        audio_paths: Union[str, List[str]],
-        text_prompt: str = "",
-        normalize: bool = True,
-    ) -> torch.Tensor:
-        """
-        Encode audio file(s), optionally accompanied by a text prompt.
-
-        Args:
-            audio_paths:  Single path/URL or list of paths/URLs.
-            text_prompt:  Optional text to include alongside each audio file.
-            normalize:    Whether to L2-normalise the embeddings.
-
-        Returns:
-            Shape (D,) for a single path, (N, D) for a list.
-        """
-
-        def _content(path: str) -> ContentList:
-            content: ContentList = [{"type": "audio", "audio": path}]
-            if text_prompt:
-                content.insert(0, {"type": "text", "text": text_prompt})
-            return content
-
-        if isinstance(audio_paths, str):
-            return self.encode(_content(audio_paths), normalize)
-
-        return self.encode_batch([_content(p) for p in audio_paths], normalize)
-
-    # ------------------------------------------------------------------
-    # Public: similarity
-    # ------------------------------------------------------------------
-
-    def compute_similarity(
-        self,
-        query_embeds: torch.Tensor,
-        doc_embeds: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Compute pairwise cosine similarity between two sets of embeddings.
-
-        Assumes embeddings are already L2-normalised (normalize=True, the
-        default).  If you passed normalize=False, normalise manually first.
-
-        Args:
-            query_embeds: (Q, D) or (D,) tensor.
-            doc_embeds:   (K, D) or (D,) tensor.
-
-        Returns:
-            (Q, K) similarity matrix, or scalar if both inputs are 1-D.
-        """
-        q_2d = query_embeds.unsqueeze(0) if query_embeds.dim() == 1 else query_embeds
-        d_2d = doc_embeds.unsqueeze(0) if doc_embeds.dim() == 1 else doc_embeds
-
-        sim = torch.matmul(q_2d, d_2d.T)  # (Q, K)
-
-        if query_embeds.dim() == 1 and doc_embeds.dim() == 1:
-            return sim[0, 0]
-        return sim
-
-    # ------------------------------------------------------------------
-    # Public: misc
-    # ------------------------------------------------------------------
+        return self.encode(messages, audio_inputs, image_inputs, video_inputs)
 
     def get_embedding_dim(self) -> int:
-        """Return the dimensionality of the output embeddings."""
+        """Get embedding dimensionality."""
         return self.embedding_dim
-
-    # ------------------------------------------------------------------
-    # nn.Module forward
-    # ------------------------------------------------------------------
 
     def forward(
         self,
-        contents: Optional[Union[ContentList, List[ContentList]]] = None,
-        texts: Optional[Union[str, List[str]]] = None,
-        image_paths: Optional[Union[str, List[str]]] = None,
-        video_paths: Optional[Union[str, List[str]]] = None,
-        audio_paths: Optional[Union[str, List[str]]] = None,
-        normalize: bool = True,
-    ) -> torch.Tensor:
+        question: Optional[str] = None,
+        audios: Optional[Dict[str, str]] = None,
+        images: Optional[Dict[str, str]] = None,
+        videos: Optional[Dict[str, str]] = None,
+        sample: Optional[Dict] = None,
+    ) -> Dict[str, Optional[torch.Tensor]]:
         """
-        Unified forward pass.
-
-        Priority order (first non-None wins):
-          1. `contents`     — pre-built content list(s), most flexible
-          2. `texts`        — plain text shortcut
-          3. `image_paths`  — image-only shortcut
-          4. `video_paths`  — video-only shortcut
-          5. `audio_paths`  — audio-only shortcut
+        Forward pass for encoding.
 
         Args:
-            contents:     A single ContentList or a list of ContentLists.
-            texts:        Plain string(s).
-            image_paths:  Image file path(s) or URL(s).
-            video_paths:  Video file path(s) or URL(s).
-            audio_paths:  Audio file path(s) or URL(s).
-            normalize:    Whether to L2-normalise the output.
+            question: Question text
+            audios: Dictionary of audio paths
+            images: Dictionary of image paths
+            videos: Dictionary of video paths
+            sample: Sample dictionary (alternative to providing individual components)
 
         Returns:
-            Embedding tensor — shape (D,) for a single input, (N, D) for a
-            batch.
+            Dictionary with embeddings for each modality combination
         """
-        if contents is not None:
-            # Distinguish single ContentList from List[ContentList] by
-            # checking whether the first element is a dict.
-            if contents and isinstance(contents[0], dict):
-                return self.encode(contents, normalize)  # type: ignore[arg-type]
-            return self.encode_batch(contents, normalize)  # type: ignore[arg-type]
+        if sample is not None:
+            return self.encode_from_sample(sample)
 
-        if texts is not None:
-            return self.encode_text(texts, normalize)
+        messages = self.create_messages(question, audios, images, videos)
 
-        if image_paths is not None:
-            return self.encode_images(image_paths, normalize=normalize)
+        try:
+            audio_inputs, image_inputs, video_inputs = process_mm_info(
+                messages["all"],
+                use_audio_in_video=self.use_audio_in_video
+            )
+        except Exception:
+            audio_inputs, image_inputs, video_inputs = process_mm_info(
+                messages["all"],
+                use_audio_in_video=False
+            )
 
-        if video_paths is not None:
-            return self.encode_videos(video_paths, normalize=normalize)
-
-        if audio_paths is not None:
-            return self.encode_audio(audio_paths, normalize=normalize)
-
-        raise ValueError(
-            "Must provide at least one of: contents, texts, image_paths, "
-            "video_paths, audio_paths."
-        )
+        return self.encode(messages, audio_inputs, image_inputs, video_inputs)
