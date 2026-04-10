@@ -11,25 +11,29 @@ transformers>=4.35.0
 sentence-transformers>=2.2.0
 accelerate>=0.24.0
 safetensors>=0.4.0
+huggingface-hub>=0.20.0
 
 # Multimodal models and embeddings
 timm>=0.9.0
 open_clip_torch>=2.23.0
 pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Audio processing
+librosa>=0.10.0
+mutagen>=1.47.0
 
 # Data processing
 datasets>=2.14.0
 h5py>=3.9.0
 tqdm>=4.66.0
 
-# Evaluation and metrics
-scikit-metrics>=0.1.0
+# Evaluation and visualization
 matplotlib>=3.7.0
 seaborn>=0.12.0
 
 # Configuration and logging
 pyyaml>=6.0
-hydra-core>=1.3.0
 tensorboard>=2.14.0
 wandb>=0.15.0
 
@@ -37,6 +41,6 @@ wandb>=0.15.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 
-# Optional: For LVLM integration
-# llava>=1.6.0  # Install separately if needed
-# openai>=1.0.0  # For API-based models
+# Optional: heavy/platform-specific dependencies
+# vllm>=0.4.0  # Requires CUDA; install separately if needed
+# google-genai>=1.0.0  # For Gemini API access; install separately if needed
