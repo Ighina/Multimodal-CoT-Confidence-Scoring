@@ -19,12 +19,9 @@ completed_states = set(
 )
 
 
-<<<<<<< HEAD
 MAX_WAIT_SECONDS = 3600  # 1 hour max
 POLL_INTERVAL = 30
 
-=======
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
 def get_candidate_text(candidate, thought=False):
     parts = candidate.get("content", {}).get("parts", [])
     texts = []
@@ -141,11 +138,7 @@ def transform(sample, response, key):
     thought_text = get_candidate_text(candidate, thought=True)
     if not thought_text:
         thought_text_answer = parsed.steps
-<<<<<<< HEAD
         thought_text = " ".join(thought_text_answer[:-1])
-=======
-        thought_text = thought_text_answer[:-1]
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
         answer_text = thought_text_answer[-1]
     else:
         answer_text = get_candidate_text(candidate, thought=False)
@@ -157,16 +150,6 @@ def transform(sample, response, key):
     # FIX #6b: Read model version from the response field ("modelVersion")
     # rather than hardcoding a string that may not match the job's actual model.
     model_version = response.get("modelVersion", "unknown")
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-
-    thought_text = " ".join(thought_text)
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
-=======
-
-    thought_text = " ".join(thought_text)
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
 
     result = {
         "metadata": {
@@ -214,7 +197,6 @@ def generate_batch(input_file, n, model_name="gemini-3.1-flash-lite-preview"):
     job_name = file_batch_job.name
 
     print(f"Polling status for job: {job_name}")
-<<<<<<< HEAD
     
     elapsed = 0
     batch_job = client.batches.get(name=job_name)
@@ -236,13 +218,6 @@ def generate_batch(input_file, n, model_name="gemini-3.1-flash-lite-preview"):
     #    print(f"Current state: {batch_job.state.name}")
     #    time.sleep(30)
     #    batch_job = client.batches.get(name=job_name)
-=======
-    batch_job = client.batches.get(name=job_name)
-    while batch_job.state.name not in completed_states:
-        print(f"Current state: {batch_job.state.name}")
-        time.sleep(30)
-        batch_job = client.batches.get(name=job_name)
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
 
     # FIX #7: Check terminal state before attempting download
     if batch_job.state.name != "JOB_STATE_SUCCEEDED":
@@ -258,26 +233,13 @@ def generate_batch(input_file, n, model_name="gemini-3.1-flash-lite-preview"):
 
     return full_filename
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-def combine_n_verify_outputs(input_filenames, checkpoint_freq=50):
-    samples = UNOBenchLoader("/scratch/datasets/uno-bench")
-    
-    out_filename = input_filenames[0][:input_filenames[0].rfind(".")] + "_complete.json"
-=======
-=======
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
-
 def combine_n_verify_outputs(input_filenames, checkpoint_freq=50):
     samples = UNOBenchLoader("/scratch/datasets/uno-bench")
 
     out_filename = (
         input_filenames[0][: input_filenames[0].rfind(".")] + "_complete.json"
     )
-<<<<<<< HEAD
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
-=======
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
+
     checkpoint_filename = out_filename + ".chkpt"
 
     # 1. Load from checkpoint if it exists
@@ -295,15 +257,7 @@ def combine_n_verify_outputs(input_filenames, checkpoint_freq=50):
 
     for file_idx, input_filename in enumerate(input_filenames):
         print(f"Processing candidate file: {input_filename}")
-<<<<<<< HEAD
-<<<<<<< HEAD
-        
-=======
 
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
-=======
-
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
         # 2. Iterate line-by-line instead of reading everything into memory
         with open(input_filename, "r") as f:
             for line_idx, line in enumerate(f):
@@ -312,17 +266,13 @@ def combine_n_verify_outputs(input_filenames, checkpoint_freq=50):
 
                 # 3. Skip if this candidate is already processed for this key
                 # (This ensures we don't re-run API calls when resuming from a checkpoint)
-<<<<<<< HEAD
-<<<<<<< HEAD
                 if combined_results[key] is not None and len(combined_results[key]) > file_idx:
                     continue 
                 
                 # 4. Handle missing 'response' gracefully
                 if "response" not in dline:
                     print(f"WARNING: 'response' key missing in {input_filename} at line {line_idx} (key {key}).")
-=======
-=======
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
+
                 if (
                     combined_results[key] is not None
                     and len(combined_results[key]) > file_idx
@@ -334,44 +284,24 @@ def combine_n_verify_outputs(input_filenames, checkpoint_freq=50):
                     print(
                         f"WARNING: 'response' key missing in {input_filename} at line {line_idx} (key {key})."
                     )
-<<<<<<< HEAD
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
-=======
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
+
                     print(f"Available keys: {list(dline.keys())}")
                     # Create a dummy result so the indices and data structure remain intact
                     transformed_dline = {
                         "metadata": {
-<<<<<<< HEAD
-<<<<<<< HEAD
                             "original_idx": key, 
                             "api": "gemini", 
                             "error": "Missing response in batch output",
-                            "correct": False
-=======
-=======
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
+                            "correct": False,
                             "original_idx": key,
                             "api": "gemini",
                             "error": "Missing response in batch output",
                             "correct": False,
-<<<<<<< HEAD
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
-=======
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
                         },
                         "final_answer": "",
                         "text": "API ERROR: No response provided by batch API.",
                         "steps": [],
-<<<<<<< HEAD
-<<<<<<< HEAD
                         "log_probs": None
-=======
-                        "log_probs": None,
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
-=======
-                        "log_probs": None,
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
                     }
                 else:
                     # 5. Try-except block for the secondary API call in transform()
@@ -379,19 +309,8 @@ def combine_n_verify_outputs(input_filenames, checkpoint_freq=50):
                         sample = samples[key]
                         transformed_dline = transform(sample, dline["response"], key)
                     except Exception as e:
-<<<<<<< HEAD
-<<<<<<< HEAD
                         print(f"\nCRITICAL ERROR during transform at {input_filename} line {line_idx} (key {key}): {e}")
-=======
-                        print(
-                            f"\nCRITICAL ERROR during transform at {input_filename} line {line_idx} (key {key}): {e}"
-                        )
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
-=======
-                        print(
-                            f"\nCRITICAL ERROR during transform at {input_filename} line {line_idx} (key {key}): {e}"
-                        )
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
+                        
                         print("Saving emergency checkpoint before crashing...")
                         with open(checkpoint_filename, "w") as chk_f:
                             json.dump(combined_results, chk_f)
@@ -406,19 +325,9 @@ def combine_n_verify_outputs(input_filenames, checkpoint_freq=50):
                 # 6. Periodic Checkpointing
                 processed_count += 1
                 if processed_count % checkpoint_freq == 0:
-<<<<<<< HEAD
-<<<<<<< HEAD
+
                     print(f"Checkpoint saved ({processed_count} new inferences processed).")
-=======
-                    print(
-                        f"Checkpoint saved ({processed_count} new inferences processed)."
-                    )
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
-=======
-                    print(
-                        f"Checkpoint saved ({processed_count} new inferences processed)."
-                    )
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
+
                     with open(checkpoint_filename, "w") as chk_f:
                         json.dump(combined_results, chk_f)
 
