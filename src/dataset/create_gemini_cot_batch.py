@@ -100,7 +100,7 @@ def upload_and_get_part(
     return {
         "fileData": {
             "mimeType": mime_type,
-            "fileUri": file_uri
+            "fileUri": file_uri[file_uri.index("files"):]
         }
     }
 
