@@ -16,6 +16,9 @@ completed_states = set([
      'JOB_STATE_EXPIRED',
  ])
 
+MAX_WAIT_SECONDS = 3600  # 1 hour max
+POLL_INTERVAL = 30
+
 def get_candidate_text(candidate, thought=False):
     parts = candidate.get("content", {}).get("parts", [])
     texts = []
@@ -100,7 +103,7 @@ Return a JSON object with:
     # FIX #2: Updated to a valid model name. Replace with whichever Gemini
     # model you have access to (e.g. "gemini-2.5-pro-preview-03-25").
     gemini_response = client.models.generate_content(
-        model="gemini-3.1-pro-preview",
+        model="gemini-3.1-flash-lite-preview",
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -130,7 +133,7 @@ def transform(sample, response, key):
     thought_text = get_candidate_text(candidate, thought=True)
     if not thought_text:
         thought_text_answer = parsed.steps
-        thought_text = thought_text_answer[:-1]
+        thought_text = " ".join(thought_text_answer[:-1])
         answer_text = thought_text_answer[-1]
     else:
         answer_text  = get_candidate_text(candidate, thought=False)
@@ -142,8 +145,6 @@ def transform(sample, response, key):
     # FIX #6b: Read model version from the response field ("modelVersion")
     # rather than hardcoding a string that may not match the job's actual model.
     model_version = response.get("modelVersion", "unknown")
-    
-    thought_text = " ".join(thought_text)
 
     result = {
         "metadata": {
@@ -190,11 +191,27 @@ def generate_batch(input_file, n, model_name="gemini-3.1-flash-lite-preview"):
     job_name = file_batch_job.name
 
     print(f"Polling status for job: {job_name}")
+    
+    elapsed = 0
     batch_job = client.batches.get(name=job_name)
+    
     while batch_job.state.name not in completed_states:
-        print(f"Current state: {batch_job.state.name}")
-        time.sleep(30)
-        batch_job = client.batches.get(name=job_name)
+        if elapsed >= MAX_WAIT_SECONDS:
+            raise TimeoutError(f"Batch job '{job_name}' timed out after {MAX_WAIT_SECONDS}s. Last state: {batch_job.state.name}")
+        print(f"Current state: {batch_job.state.name} ({elapsed}s elapsed)")
+        time.sleep(POLL_INTERVAL)
+        elapsed += POLL_INTERVAL
+        try:
+            batch_job = client.batches.get(name=job_name)
+        except Exception as e:
+            print(f"Poll error (will retry): {e}")
+            continue  # don't crash on transient 503 during polling
+
+    #batch_job = client.batches.get(name=job_name)
+    #while batch_job.state.name not in completed_states:
+    #    print(f"Current state: {batch_job.state.name}")
+    #    time.sleep(30)
+    #    batch_job = client.batches.get(name=job_name)
 
     # FIX #7: Check terminal state before attempting download
     if batch_job.state.name != 'JOB_STATE_SUCCEEDED':
@@ -210,31 +227,90 @@ def generate_batch(input_file, n, model_name="gemini-3.1-flash-lite-preview"):
 
     return full_filename
 
-def combine_n_verify_outputs(input_filenames):
-
+def combine_n_verify_outputs(input_filenames, checkpoint_freq=50):
     samples = UNOBenchLoader("/scratch/datasets/uno-bench")
-
+    
     out_filename = input_filenames[0][:input_filenames[0].rfind(".")] + "_complete.json"
+    checkpoint_filename = out_filename + ".chkpt"
 
-    # FIX #3: len() was used as an iterable; use the line count to size the list
-    with open(input_filenames[0]) as f:
-        combined_results = [None] * len(f.readlines())
+    # 1. Load from checkpoint if it exists
+    if os.path.exists(checkpoint_filename):
+        print(f"Loading progress from checkpoint: {checkpoint_filename}")
+        with open(checkpoint_filename, "r") as f:
+            combined_results = json.load(f)
+    else:
+        # Determine the number of samples from the first file safely
+        with open(input_filenames[0], "r") as f:
+            total_lines = sum(1 for _ in f)
+        combined_results = [None] * total_lines
 
-    for input_filename in input_filenames:
-        with open(input_filename) as f:
-            for line in f.readlines():
+    processed_count = 0
+
+    for file_idx, input_filename in enumerate(input_filenames):
+        print(f"Processing candidate file: {input_filename}")
+        
+        # 2. Iterate line-by-line instead of reading everything into memory
+        with open(input_filename, "r") as f:
+            for line_idx, line in enumerate(f):
                 dline = json.loads(line)
-                # FIX #4: Capture the key before transform() discards it
                 key = int(dline["key"])
-                sample = samples[key]
-                dline = transform(sample, dline["response"], key)
-                if combined_results[key] is None:
-                    combined_results[key] = [dline]
-                else:
-                    combined_results[key].append(dline)
 
+                # 3. Skip if this candidate is already processed for this key
+                # (This ensures we don't re-run API calls when resuming from a checkpoint)
+                if combined_results[key] is not None and len(combined_results[key]) > file_idx:
+                    continue 
+                
+                # 4. Handle missing 'response' gracefully
+                if "response" not in dline:
+                    print(f"WARNING: 'response' key missing in {input_filename} at line {line_idx} (key {key}).")
+                    print(f"Available keys: {list(dline.keys())}")
+                    # Create a dummy result so the indices and data structure remain intact
+                    transformed_dline = {
+                        "metadata": {
+                            "original_idx": key, 
+                            "api": "gemini", 
+                            "error": "Missing response in batch output",
+                            "correct": False
+                        },
+                        "final_answer": "",
+                        "text": "API ERROR: No response provided by batch API.",
+                        "steps": [],
+                        "log_probs": None
+                    }
+                else:
+                    # 5. Try-except block for the secondary API call in transform()
+                    try:
+                        sample = samples[key]
+                        transformed_dline = transform(sample, dline["response"], key)
+                    except Exception as e:
+                        print(f"\nCRITICAL ERROR during transform at {input_filename} line {line_idx} (key {key}): {e}")
+                        print("Saving emergency checkpoint before crashing...")
+                        with open(checkpoint_filename, "w") as chk_f:
+                            json.dump(combined_results, chk_f)
+                        raise e  # Re-raise so you can debug the root cause
+
+                # Append the parsed result
+                if combined_results[key] is None:
+                    combined_results[key] = [transformed_dline]
+                else:
+                    combined_results[key].append(transformed_dline)
+
+                # 6. Periodic Checkpointing
+                processed_count += 1
+                if processed_count % checkpoint_freq == 0:
+                    print(f"Checkpoint saved ({processed_count} new inferences processed).")
+                    with open(checkpoint_filename, "w") as chk_f:
+                        json.dump(combined_results, chk_f)
+
+    # Final save and cleanup
+    print(f"Successfully processed all files. Saving to {out_filename}...")
     with open(out_filename, "w") as f:
         json.dump(combined_results, f)
+
+    if os.path.exists(checkpoint_filename):
+        os.remove(checkpoint_filename)
+        print("Removed temporary checkpoint file.")
+
 
 if __name__ == "__main__":
     # TODO: CHECK THOROUGHLY THIS CODE (PARTICULARLY, WE COULD DIVIDE THE GENERATION AND COMBINE AND VERIFY FUNCTIONS FOR SAFETY)
