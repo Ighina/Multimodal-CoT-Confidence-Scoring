@@ -110,11 +110,7 @@ Return a JSON object with:
     # FIX #2: Updated to a valid model name. Replace with whichever Gemini
     # model you have access to (e.g. "gemini-2.5-pro-preview-03-25").
     gemini_response = client.models.generate_content(
-<<<<<<< HEAD
         model="gemini-3.1-flash-lite-preview",
-=======
-        model="gemini-3.1-pro-preview",
->>>>>>> 6383b03f92eef04f4865184d60d183fafb56945e
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
