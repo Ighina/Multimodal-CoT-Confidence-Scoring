@@ -10,7 +10,6 @@ import torch.nn.functional as F
 from transformers import AutoModel, AutoProcessor
 from qwen_omni_utils import process_mm_info
 
-
 class OmnimodalEncoder(nn.Module):
     """
     Encode multimodal content (text, images, audio, video) into unified embeddings.
@@ -79,6 +78,54 @@ class OmnimodalEncoder(nn.Module):
             return 2048
         else:
             return 3584
+
+    def create_text_messages(self, 
+                             question: str, 
+                             steps: str):
+      messages_question = [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": question
+                        }
+                    ]
+                }]
+
+      message_answer = [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": steps[-1]
+                        }
+                    ]}]
+
+      messages_steps = [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": steps[0]
+                        }
+                    ]
+                }]
+      for step in steps[1:-1]:
+        messages_steps.append(
+            {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": step
+                        }
+                    ]
+                }
+        )
+
+      return {"question": messages_question,
+              "answer": message_answer,
+              "steps": messages_steps}
 
     def create_messages(
         self,
@@ -182,6 +229,44 @@ class OmnimodalEncoder(nn.Module):
         torch.cuda.empty_cache()
 
         return embedding
+    
+    def encode_text(self,
+                    question: str,
+                    steps: str):
+      with torch.no_grad():
+          messages = self.create_text_messages(question, steps)
+
+          text = self.processor.apply_chat_template(
+                  messages["question"], tokenize=False, add_generation_prompt=True
+            )
+          inputs = self.processor(
+              text=text,
+              return_tensors="pt",
+              padding=True
+          )
+          question_embedding = self._run_model(inputs)
+
+          text = self.processor.apply_chat_template(
+                  messages["answer"], tokenize=False, add_generation_prompt=True
+            )
+          inputs = self.processor(
+              text=text,
+              return_tensors="pt",
+              padding=True
+          )
+          answer_embedding = self._run_model(inputs)
+
+          text = [self.processor.apply_chat_template(
+                  [step], tokenize=False, add_generation_prompt=True
+            ) for step in messages["steps"]]
+
+          inputs = self.processor(
+              text=text,
+              return_tensors="pt",
+              padding=True
+          )
+          step_embeddings = self._run_model(inputs)
+      return question_embedding, answer_embedding, step_embeddings
 
     def encode(
         self,

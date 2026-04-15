@@ -410,6 +410,7 @@ def process_sample_sequential(
     save_embeddings_dir: Optional[Path] = None,
     logger: Optional[logging.Logger] = None,
     encode_from_url: bool = True,
+    modal_embeddings: Optional[Path] = None
 ) -> tuple[List[Dict[str, torch.Tensor]], List[Dict[str, float]]]:
 
     assert not (
@@ -425,13 +426,15 @@ def process_sample_sequential(
     sample_embeddings = []
 
     for chain in cot_chains:
-        if text_encoder != "clap" and text_encoder is not None:
+        
+        if not modal_embeddings:
+          if text_encoder != "clap" and text_encoder is not None:
             step_embeddings = text_encoder.encode_cot_steps(
                 chain.steps, question=sample.question
             )
             question_embedding = text_encoder(sample.question)
             answer_embedding = text_encoder(chain.final_answer)
-        elif text_encoder == "clap" and audio_encoder is not None:
+          elif text_encoder == "clap" and audio_encoder is not None:
             step_embeddings = audio_encoder.encode_text_for_audio_alignment(chain.steps)
             question_embedding = audio_encoder.encode_text_for_audio_alignment(
                 [sample.question]
@@ -439,15 +442,15 @@ def process_sample_sequential(
             answer_embedding = audio_encoder.encode_text_for_audio_alignment(
                 [chain.final_answer]
             )
+          
+          modal_embeddings = {"image": None, "audio": None, "video": None}
+          existing_modalities = []
 
-        modal_embeddings = {"image": None, "audio": None, "video": None}
-        existing_modalities = []
-
-        if sample.images and multimodal_encoder:
+          if sample.images and multimodal_encoder:
             modal_embeddings["image"] = multimodal_encoder.encode_images(sample.images)
             existing_modalities.append("image")
 
-        if sample.audio_paths and audio_encoder:
+          if sample.audio_paths and audio_encoder:
             if text_encoder == "clap":
                 step_embeddings = audio_encoder.encode_text_for_audio_alignment(
                     chain.steps
@@ -468,7 +471,7 @@ def process_sample_sequential(
                 )
             existing_modalities.append("audio")
 
-        if sample.video_paths and multimodal_encoder:
+          if sample.video_paths and multimodal_encoder:
             if encode_from_url:
                 video_paths = (
                     [
@@ -486,15 +489,17 @@ def process_sample_sequential(
             modal_embeddings["video"] = video_embeddings
             existing_modalities.append("video")
 
-        if omnimodal_encoder:
-            step_embeddings = omnimodal_encoder.encode_text(chain.steps)
-            question_embedding = omnimodal_encoder.encode_text(sample.question)
-            answer_embedding = omnimodal_encoder.encode_text(chain.final_answer)
-
+          if omnimodal_encoder:
+            question_embedding, answer_embedding, step_embeddings = omnimodal_encoder.encode_text(sample.question, chain.steps)
+            question_embedding = question_embedding.to("cpu")
+            answer_embedding = answer_embedding.to("cpu")
+            step_embeddings = step_embeddings.to("cpu")
+            
             if encode_from_url:
+
                 audio_paths = (
                     [
-                        UNO_BENCH_AUDIO_URL + Path(path).name
+                        Path(path).name
                         for path in sample.audio_paths
                     ]
                     if sample.audio_paths
@@ -502,24 +507,44 @@ def process_sample_sequential(
                 )
                 video_paths = (
                     [
-                        UNO_BENCH_VIDEO_URL + Path(path).name
+                        Path(path).name
                         for path in sample.video_paths
                     ]
                     if sample.video_paths
                     else []
                 )
+                image_paths = (
+                    [
+                        Path(path).name
+                        for path in sample.image_paths
+                    ]
+                    if sample.image_paths
+                    else []
+                )
             else:
+                raise NotImplementedError
                 audio_paths = sample.audio_paths
                 video_paths = sample.video_paths
+                image_paths = sample.image_paths
 
             modal_embeddings["omnimodal"] = omnimodal_encoder.encode(
                 text=sample.question,
-                images=sample.images,
-                audio_paths=audio_paths,
-                video_paths=video_paths,
+                audio_inputs=audio_paths,
+                video_inputs=video_paths,
+                image_inputs=image_paths
             )
 
             existing_modalities.append("omnimodal")
+        
+        else:
+          # We directly get the multimodal embeddings from the pre-computed file
+          assert omnimodal_encoder, "If using pre-computed modal embeddings you need to pass the same omnimodal encoder to compute the text embeddings!!!"
+          existing_modalities = list(modal_embeddings.keys())
+          
+          question_embedding, answer_embedding, step_embeddings = omnimodal_encoder.encode_text(sample.question, chain.steps)
+          question_embedding = question_embedding.to("cpu")
+          answer_embedding = answer_embedding.to("cpu")
+          step_embeddings = step_embeddings.to("cpu")
 
         # TODO: handle cases in which multimodal encoding fails
         # if modal_embeddings is None:
@@ -531,12 +556,17 @@ def process_sample_sequential(
         #     modal_embeddings = torch.zeros(embedding_dim).to("cpu")
 
         if len(existing_modalities) == 1:
-            modal_embeddings = modal_embeddings[existing_modalities[0]].cpu()
+            try:
+                modal_embeddings = modal_embeddings[existing_modalities[0]].cpu()
+            except AttributeError:
+                modal_embeddings = torch.tensor(modal_embeddings[existing_modalities[0]]).cpu()
         else:
             for modality in existing_modalities:
                 if modal_embeddings[modality] is not None:
-                    modal_embeddings[modality] = modal_embeddings[modality].cpu()
-
+                    try:
+                        modal_embeddings[modality] = modal_embeddings[modality].cpu()
+                    except AttributeError:
+                        modal_embeddings[modality] = torch.tensor(modal_embeddings[modality]).cpu()
         # try:
         #     step_embeddings = step_embeddings.cpu()
         # except:
@@ -823,7 +853,7 @@ def main():
     parser.add_argument("--num_chains_for_scoring", type=int, default=None)
     parser.add_argument("--max_new_tokens", type=int, default=None)
     parser.add_argument(
-        "--text_encoder", type=str, default="sentence-transformers/all-mpnet-base-v2"
+        "--text_encoder", type=str, default=None
     )
     parser.add_argument("--multimodal_encoder", type=str, default=None)
     parser.add_argument("--audio_encoder", type=str, default=None)
@@ -833,6 +863,12 @@ def main():
         action="store_true",
         help="Download/encode media directly from HF URLs",
     )
+    parser.add_argument(
+        "--modal_embeddings",
+        type=str,
+        default=None,
+        help="If included, this is the path to the pre-computed modal embeddings (still different from loading embeddings, as text embeddings are computed on the fly)"
+            )
 
     # Coherence metric arguments (Embedding Base)
     parser.add_argument(
@@ -971,7 +1007,15 @@ def main():
                 Path(args.save_embeddings) if args.save_embeddings else None
             )
 
+            if args.modal_embeddings:
+                with open(args.modal_embeddings) as f:
+                    modal_embeddings = json.load(f)
+
             for idx, (sample, sample_chains) in enumerate(zip(samples, cots)):
+                if args.modal_embeddings:
+                    modal_embeddings_sample = modal_embeddings[idx]
+                else:
+                    modal_embeddings_sample = None
                 _, sample_scores = process_sample_sequential(
                     sample=sample,
                     sample_idx=idx,
@@ -985,6 +1029,7 @@ def main():
                     save_embeddings_dir=save_embeddings_dir,
                     logger=logger,
                     encode_from_url=args.encode_from_url,
+                    modal_embeddings=modal_embeddings_sample
                 )
                 scores.append(sample_scores)
 
