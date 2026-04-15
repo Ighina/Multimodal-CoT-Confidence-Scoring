@@ -539,8 +539,7 @@ def process_sample_sequential(
         else:
           # We directly get the multimodal embeddings from the pre-computed file
           assert omnimodal_encoder, "If using pre-computed modal embeddings you need to pass the same omnimodal encoder to compute the text embeddings!!!"
-          existing_modalities = list(modal_embeddings.keys())
-          
+
           question_embedding, answer_embedding, step_embeddings = omnimodal_encoder.encode_text(sample.question, chain.steps)
           question_embedding = question_embedding.to("cpu")
           answer_embedding = answer_embedding.to("cpu")
@@ -554,19 +553,21 @@ def process_sample_sequential(
         #         else (audio_encoder.get_embedding_dim() if audio_encoder else 512)
         #     )
         #     modal_embeddings = torch.zeros(embedding_dim).to("cpu")
-
-        if len(existing_modalities) == 1:
-            try:
-                modal_embeddings = modal_embeddings[existing_modalities[0]].cpu()
-            except AttributeError:
-                modal_embeddings = torch.tensor(modal_embeddings[existing_modalities[0]]).cpu()
-        else:
-            for modality in existing_modalities:
-                if modal_embeddings[modality] is not None:
-                    try:
-                        modal_embeddings[modality] = modal_embeddings[modality].cpu()
-                    except AttributeError:
-                        modal_embeddings[modality] = torch.tensor(modal_embeddings[modality]).cpu()
+        
+        if isinstance(modal_embeddings, dict):
+            existing_modalities = list(modal_embeddings.keys())
+            if len(existing_modalities) == 1:
+                try:
+                    modal_embeddings = modal_embeddings[existing_modalities[0]].cpu()
+                except AttributeError:
+                    modal_embeddings = torch.tensor(modal_embeddings[existing_modalities[0]]).cpu()
+            else:
+                for modality in existing_modalities:
+                    if modal_embeddings[modality] is not None:
+                        try:
+                            modal_embeddings[modality] = modal_embeddings[modality].cpu()
+                        except AttributeError:
+                            modal_embeddings[modality] = torch.tensor(modal_embeddings[modality]).cpu()
         # try:
         #     step_embeddings = step_embeddings.cpu()
         # except:
