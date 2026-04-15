@@ -427,7 +427,7 @@ def process_sample_sequential(
 
     for chain in cot_chains:
         
-        if not modal_embeddings:
+        if modal_embeddings is None:
           if text_encoder != "clap" and text_encoder is not None:
             step_embeddings = text_encoder.encode_cot_steps(
                 chain.steps, question=sample.question
