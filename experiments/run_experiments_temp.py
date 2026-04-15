@@ -539,6 +539,9 @@ def process_sample_sequential(
         else:
           # We directly get the multimodal embeddings from the pre-computed file
           assert omnimodal_encoder, "If using pre-computed modal embeddings you need to pass the same omnimodal encoder to compute the text embeddings!!!"
+          
+          if not chain.steps:
+              chain.steps = ["ERROR"]
 
           question_embedding, answer_embedding, step_embeddings = omnimodal_encoder.encode_text(sample.question, chain.steps)
           question_embedding = question_embedding.to("cpu")
