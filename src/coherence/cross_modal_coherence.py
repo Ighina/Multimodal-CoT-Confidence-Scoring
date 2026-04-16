@@ -188,6 +188,8 @@ class CrossModalCoherenceMetric(nn.Module):
             per_step_alignments_list = []
 
             for mod_name, mod_embeds in modal_embeddings.items():
+                if mod_embeds is None:
+                    continue
                 # 1. Chain-level alignment for this modality
                 align = self.compute_step_modal_alignment(step_embeddings, mod_embeds)
                 alignments.append(align)
