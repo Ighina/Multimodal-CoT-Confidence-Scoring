@@ -85,6 +85,9 @@ class CrossModalCoherenceMetric(nn.Module):
 
         similarity_matrix = torch.stack(similarities)  # (num_steps, num_modals)
 
+        if self.similarity_metric == "cosine":
+            similarity_matrix = (similarity_matrix + 1.0) / 2.0
+
         # Aggregate: average max similarity per step
         max_sim_per_step = similarity_matrix.max(dim=1)[0]
         alignment_score = max_sim_per_step.mean()
