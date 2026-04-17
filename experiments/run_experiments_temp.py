@@ -559,7 +559,7 @@ def process_sample_sequential(
         
         if isinstance(modal_embeddings, dict):
             existing_modalities = list(modal_embeddings.keys())
-            if len(existing_modalities) == 1:
+            if len(existing_modalities) == 1 and existing_modalities[0]=="omnimodal":
                 try:
                     modal_embeddings = modal_embeddings[existing_modalities[0]].cpu()
                 except AttributeError:

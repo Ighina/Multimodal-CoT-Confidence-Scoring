@@ -65,8 +65,6 @@ class CrossModalCoherenceMetric(nn.Module):
             modal_embeddings = modal_embeddings.unsqueeze(0)
 
         # Compute similarity matrix: (num_steps, num_modals)
-        # TODO: NORMALIZE FOR DISTANCE TO BE WITHIN 0-1
-        # TODO: Change below to work with omnimodal inputs (combination of two or more modalities)
         similarities = []
         if self.similarity_metric == "clap":
             for modal_emb in modal_embeddings:
@@ -205,6 +203,15 @@ class CrossModalCoherenceMetric(nn.Module):
             alignments_tensor = torch.stack(alignments)
             stacked_per_step = torch.stack(per_step_alignments_list) # (num_mods, num_steps)
 
+            modality_temperature = 0.1
+            modality_weights = F.softmax(stacked_per_step / modality_temperature, dim=0)
+            
+            # Entropy-weighted synergy (Replaces simple geometric mean)
+            # This ensures that if a step is purely auditory, the visual penalty is muted
+            entropy_weighted_alignment = (stacked_per_step * modality_weights).sum(dim=0)
+            
+            results['entropy_weighted_alignment'] = entropy_weighted_alignment.mean()
+
             # Max alignment logic (represents modality collapse fallback)
             results['overall'] = alignments_tensor.max()
             results['alignment'] = alignments_tensor.mean()
@@ -230,6 +237,10 @@ class CrossModalCoherenceMetric(nn.Module):
             # Aggregate per_step_coherence taking the max across modalities per step
             # This maintains backward compatibility for downstream tasks
             results['per_step_coherence'] = stacked_per_step.max(dim=0)[0]
+            
+            results['max_step_coherence'] = results['per_step_coherence'].max()
+            results['mean_step_coherence'] = results['per_step_coherence'].mean()
+            results['std_step_coherence'] = results['per_step_coherence'].std()
             results['min_step_coherence'] = results['per_step_coherence'].min()
 
             return results
