@@ -294,6 +294,7 @@ def evaluate_confidence_scores(
     labels: np.ndarray,
     n_bins: int = 10,
     abstention_thresholds: Optional[List[float]] = None,
+    use_max_confidence: bool = False,
 ) -> Dict:
     """
     Comprehensive evaluation of confidence scores.
@@ -303,6 +304,9 @@ def evaluate_confidence_scores(
         labels: Binary labels (N,M)
         n_bins: Number of calibration bins
         abstention_thresholds: Thresholds for abstention analysis
+        use_max_confidence: If True, select the chain with the highest confidence
+            per example (simulating real-world single-answer selection) instead of
+            flattening all chains. Reduces (N,M) -> (N,) before computing metrics.
 
     Returns:
         Dictionary with all evaluation metrics
@@ -312,9 +316,15 @@ def evaluate_confidence_scores(
     # In-group Accuracy
     results["in_group_accuracy"] = compute_accuracy_in_groups(confidences, labels)
 
-    # Flatten confidences and labels for other metrics
-    confidences = confidences.flatten()
-    labels = labels.flatten()
+    # Reduce to one prediction per group or flatten all chains
+    if use_max_confidence:
+        best_idx = np.argmax(confidences, axis=1)
+        row_idx = np.arange(len(best_idx))
+        confidences = confidences[row_idx, best_idx]
+        labels = labels[row_idx, best_idx]
+    else:
+        confidences = confidences.flatten()
+        labels = labels.flatten()
 
     # Confusion matrix at default threshold 0.5
     results["confusion_matrix"] = compute_confusion_matrix_from_threshold(

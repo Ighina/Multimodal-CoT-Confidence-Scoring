@@ -687,6 +687,7 @@ def run_single_evaluation(
     normalize: bool,
     shuffle: bool,
     seed: int = None,
+    use_max_confidence: bool = False,
 ) -> Tuple[Dict, Dict]:
     """
     Run a single evaluation iteration.
@@ -698,6 +699,8 @@ def run_single_evaluation(
         normalize: Whether to normalize confidence scores
         shuffle: Whether to shuffle the data
         seed: Random seed for reproducibility
+        use_max_confidence: If True, evaluate using only the highest-confidence
+            chain per example instead of flattening all chains.
 
     Returns:
         Tuple of (method_results, comparison)
@@ -725,7 +728,9 @@ def run_single_evaluation(
     method_results = {}
     for method_name, confidences in confidence_methods.items():
         try:
-            results = evaluate_confidence_scores(confidences, labels)
+            results = evaluate_confidence_scores(
+                confidences, labels, use_max_confidence=use_max_confidence
+            )
             method_results[method_name] = results
         except Exception as e:
             print(f"    ERROR evaluating {method_name}: {e}")
@@ -881,6 +886,7 @@ def run_evaluation_for_split(
     multiple_experiments: bool,
     multiple_iterations: int,
     label: str,
+    use_max_confidence: bool = False,
 ) -> Dict:
     """
     Run evaluation (single or multiple experiments) for a given data split and
@@ -895,6 +901,8 @@ def run_evaluation_for_split(
         multiple_experiments: Whether to run multiple iterations
         multiple_iterations: Number of iterations when multiple_experiments is True
         label: Human-readable name for this split (used in log messages)
+        use_max_confidence: If True, evaluate using only the highest-confidence
+            chain per example instead of flattening all chains.
 
     Returns:
         Dict with keys "method_results", "comparison", and optionally "aggregation"
@@ -911,6 +919,7 @@ def run_evaluation_for_split(
                 normalize=normalize,
                 shuffle=shuffle,
                 seed=i,
+                use_max_confidence=use_max_confidence,
             )
             all_results.append(method_results)
             all_comparisons.append(comparison)
@@ -933,6 +942,7 @@ def run_evaluation_for_split(
             normalize=normalize,
             shuffle=shuffle,
             seed=42,
+            use_max_confidence=use_max_confidence,
         )
         return {
             "method_results": method_results,
@@ -1131,6 +1141,16 @@ def main():
         default=1000,
         help="Number of iterations when --multiple_experiments is used (default: 1000)",
     )
+    parser.add_argument(
+        "--use_max_confidence",
+        action="store_true",
+        help=(
+            "Evaluate using only the highest-confidence chain per example "
+            "(simulates real-world single-answer selection). "
+            "When set, metrics are computed over one prediction per example "
+            "instead of flattening all chains."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1170,6 +1190,7 @@ def main():
         multiple_experiments=args.multiple_experiments,
         multiple_iterations=args.multiple_iterations,
         label="OVERALL",
+        use_max_confidence=args.use_max_confidence,
     )
 
     print_split_summary(overall_result, label="OVERALL", multiple_experiments=args.multiple_experiments)
@@ -1194,6 +1215,7 @@ def main():
             multiple_experiments=args.multiple_experiments,
             multiple_iterations=args.multiple_iterations,
             label=subset_name,
+            use_max_confidence=args.use_max_confidence,
         )
 
         print_split_summary(
@@ -1242,6 +1264,7 @@ def main():
             "multiple_iterations": (
                 args.multiple_iterations if args.multiple_experiments else 1
             ),
+            "use_max_confidence": args.use_max_confidence,
         },
     }
 
