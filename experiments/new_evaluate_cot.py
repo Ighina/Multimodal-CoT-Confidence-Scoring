@@ -181,6 +181,7 @@ def extract_score_arrays(
         "nli_cumulative_step": [],
         "nli_goal": [],
         "confidence": [],
+        "umpire": [],
     }
 
     for example_scores in scores_data:
@@ -243,6 +244,9 @@ def extract_score_arrays(
                 score_dict.get("nli", {}).get("goal_nli", 0.0)
             )
             example_dict["confidence"].append(score_dict.get("confidence", 0.0))
+            example_dict["umpire"].append(
+                score_dict.get("baseline", {}).get("umpire", 0.0)
+            )
 
         # Pad if needed
         for key in example_dict:
@@ -383,6 +387,8 @@ def add_consensus_methods(
         "internal_overall",
         "cross_modal_alignment",
         "nli_overall",
+        "umpire",
+        "umpire_normalized",
         "mean_all",          # already in methods
         "weighted_50_50",    # already in methods
         "mean_internal",     # already in methods
@@ -573,6 +579,10 @@ def create_aggregation_methods(
         1 / (score_arrays["internal_overall"] + epsilon)
         + 1 / (score_arrays["cross_modal_alignment"] + epsilon)
     )
+
+    # Umpire baseline score
+    methods["umpire"] = score_arrays["umpire"]
+    methods["umpire_normalized"] = normalize_confidences(score_arrays["umpire"])
 
     # NLI individual scores
     methods["nli_overall"] = score_arrays["nli_overall"]
