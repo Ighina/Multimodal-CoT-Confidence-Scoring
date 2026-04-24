@@ -265,6 +265,7 @@ def extract_score_arrays(
 # Consensus-boosted aggregation helpers
 # ---------------------------------------------------------------------------
 
+
 def build_consensus_multipliers(answers: np.ndarray) -> np.ndarray:
     """
     For each example, compute a per-chain multiplier that reflects the
@@ -377,8 +378,8 @@ def add_consensus_methods(
         score_arrays: raw score arrays from ``extract_score_arrays``.
         answers: object array (n_examples, n_chains) from ``extract_answer_arrays``.
     """
-    consensus_mult = build_consensus_multipliers(answers)   # (n_examples, n_chains)
-    plurality_mask = build_plurality_mask(answers)           # (n_examples, n_chains)
+    consensus_mult = build_consensus_multipliers(answers)  # (n_examples, n_chains)
+    plurality_mask = build_plurality_mask(answers)  # (n_examples, n_chains)
     plurality_float = plurality_mask.astype(float)
 
     # Base scores to pair with consensus signals
@@ -386,12 +387,14 @@ def add_consensus_methods(
         "confidence",
         "internal_overall",
         "cross_modal_alignment",
-        "nli_overall",
+        "cross_modal_weighted_entropy",
+        "cross_modal_geometric_mean",
+        "cross_modal_variance_penalised",
         "umpire",
         "umpire_normalized",
-        "mean_all",          # already in methods
-        "weighted_50_50",    # already in methods
-        "mean_internal",     # already in methods
+        "mean_all",  # already in methods
+        "weighted_50_50",  # already in methods
+        "mean_internal",  # already in methods
         "mean_cross_modal",  # already in methods
     ]
 
@@ -420,7 +423,9 @@ def add_consensus_methods(
         methods[f"majority_vote_x_{key}"] = consensus_mult * base
 
     # 4. Aggregate consensus signals across all base scores
-    all_base = np.stack([_get(k) for k in base_score_keys if k in score_arrays or k in methods], axis=0)
+    all_base = np.stack(
+        [_get(k) for k in base_score_keys if k in score_arrays or k in methods], axis=0
+    )
     mean_all_base = np.mean(all_base, axis=0)  # (n_examples, n_chains)
 
     methods["consensus_soft_mean"] = mean_all_base * consensus_mult
@@ -484,11 +489,19 @@ def create_aggregation_methods(
     methods["cross_modal_min_coherence"] = score_arrays["cross_modal_min_coherence"]
     try:
         methods["cross_modal_alignment_max"] = score_arrays["cross_modal_alignment_max"]
-        methods["cross_modal_weighted_entropy"] = score_arrays["cross_modal_weighted_entropy"]
-        methods["cross_modal_geometric_mean"] = score_arrays["cross_modal_geometric_mean"]
-        methods["cross_modal_variance_penalised"] = score_arrays["cross_modal_variance_penalised"]
+        methods["cross_modal_weighted_entropy"] = score_arrays[
+            "cross_modal_weighted_entropy"
+        ]
+        methods["cross_modal_geometric_mean"] = score_arrays[
+            "cross_modal_geometric_mean"
+        ]
+        methods["cross_modal_variance_penalised"] = score_arrays[
+            "cross_modal_variance_penalised"
+        ]
         methods["cross_modal_max_coherence"] = score_arrays["cross_modal_max_coherence"]
-        methods["cross_modal_mean_coherence"] = score_arrays["cross_modal_mean_coherence"]
+        methods["cross_modal_mean_coherence"] = score_arrays[
+            "cross_modal_mean_coherence"
+        ]
         methods["cross_modal_std_coherence"] = score_arrays["cross_modal_std_coherence"]
     except KeyError:
         pass
@@ -717,7 +730,9 @@ def run_single_evaluation(
     score_arrays = extract_score_arrays(scores_data, n_chains, indices=random_indices)
     answers = extract_answer_arrays(cots_data, n_chains, indices=random_indices)
 
-    confidence_methods = create_aggregation_methods(score_arrays, labels, answers=answers)
+    confidence_methods = create_aggregation_methods(
+        score_arrays, labels, answers=answers
+    )
 
     if normalize:
         confidence_methods = {
@@ -961,7 +976,9 @@ def print_split_summary(split_result: Dict, label: str, multiple_experiments: bo
         agg = split_result["aggregation"]
 
         print("  Top 3 by in-group accuracy:")
-        for i, m in enumerate(agg["aggregated_rankings"]["in_group_accuracy_ranking"][:3], 1):
+        for i, m in enumerate(
+            agg["aggregated_rankings"]["in_group_accuracy_ranking"][:3], 1
+        ):
             metrics = agg["aggregated_metrics"][m]["in_group_accuracy"]
             print(
                 f"    {i}. {m}: {metrics['mean']:.4f} "
@@ -1000,7 +1017,9 @@ def print_split_summary(split_result: Dict, label: str, multiple_experiments: bo
             print(f"    {i}. {m}: {method_results[m]['ece']:.4f}")
 
 
-def _method_rows(method_results: Dict, multiple_experiments: bool, aggregation: Dict = None) -> List[Dict]:
+def _method_rows(
+    method_results: Dict, multiple_experiments: bool, aggregation: Dict = None
+) -> List[Dict]:
     """
     Convert a method_results dict (and optional aggregation) into a list of row dicts
     suitable for csv.DictWriter.
@@ -1016,19 +1035,29 @@ def _method_rows(method_results: Dict, multiple_experiments: bool, aggregation: 
             agg_m = aggregation["aggregated_metrics"].get(method, {})
             for metric in ("in_group_accuracy", "auc_roc", "ece"):
                 m = agg_m.get(metric, {})
-                row[f"{metric}_mean"]        = round(m.get("mean",        float("nan")), 6)
-                row[f"{metric}_std"]         = round(m.get("std",         float("nan")), 6)
-                row[f"{metric}_ci_95_lower"] = round(m.get("ci_95_lower", float("nan")), 6)
-                row[f"{metric}_ci_95_upper"] = round(m.get("ci_95_upper", float("nan")), 6)
+                row[f"{metric}_mean"] = round(m.get("mean", float("nan")), 6)
+                row[f"{metric}_std"] = round(m.get("std", float("nan")), 6)
+                row[f"{metric}_ci_95_lower"] = round(
+                    m.get("ci_95_lower", float("nan")), 6
+                )
+                row[f"{metric}_ci_95_upper"] = round(
+                    m.get("ci_95_upper", float("nan")), 6
+                )
         else:
-            row["in_group_accuracy"] = round(res.get("in_group_accuracy", float("nan")), 6)
-            row["auc_roc"]           = round(res.get("auc_roc",           float("nan")), 6)
-            row["ece"]               = round(res.get("ece",               float("nan")), 6)
+            row["in_group_accuracy"] = round(
+                res.get("in_group_accuracy", float("nan")), 6
+            )
+            row["auc_roc"] = round(res.get("auc_roc", float("nan")), 6)
+            row["ece"] = round(res.get("ece", float("nan")), 6)
 
         rows.append(row)
 
     # Sort by in_group_accuracy descending (use mean when available)
-    sort_key = "in_group_accuracy_mean" if multiple_experiments and aggregation else "in_group_accuracy"
+    sort_key = (
+        "in_group_accuracy_mean"
+        if multiple_experiments and aggregation
+        else "in_group_accuracy"
+    )
     rows.sort(key=lambda r: r.get(sort_key, float("-inf")), reverse=True)
     return rows
 
@@ -1047,7 +1076,9 @@ def save_overall_csv(
     csv_path = output_path.with_name(output_path.stem + "_overall.csv")
 
     aggregation = overall_result.get("aggregation")
-    rows = _method_rows(overall_result["method_results"], multiple_experiments, aggregation)
+    rows = _method_rows(
+        overall_result["method_results"], multiple_experiments, aggregation
+    )
 
     if not rows:
         return
@@ -1078,9 +1109,17 @@ def save_subsets_csv(
     all_rows = []
     for subset_name, split_result in sorted(subset_results.items()):
         aggregation = split_result.get("aggregation")
-        rows = _method_rows(split_result["method_results"], multiple_experiments, aggregation)
+        rows = _method_rows(
+            split_result["method_results"], multiple_experiments, aggregation
+        )
         for row in rows:
-            all_rows.append({"subset_name": subset_name, "n_examples": split_result["n_examples"], **row})
+            all_rows.append(
+                {
+                    "subset_name": subset_name,
+                    "n_examples": split_result["n_examples"],
+                    **row,
+                }
+            )
 
     if not all_rows:
         return
@@ -1193,7 +1232,9 @@ def main():
         use_max_confidence=args.use_max_confidence,
     )
 
-    print_split_summary(overall_result, label="OVERALL", multiple_experiments=args.multiple_experiments)
+    print_split_summary(
+        overall_result, label="OVERALL", multiple_experiments=args.multiple_experiments
+    )
 
     # ------------------------------------------------------------------ #
     # Per-subset evaluation                                                #
