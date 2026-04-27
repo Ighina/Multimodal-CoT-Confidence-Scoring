@@ -266,8 +266,8 @@ class CrossModalCoherenceMetric(nn.Module):
         # Attention-weighted alignment
         if self.use_attention:
             weighted_alignment, attention = self.compute_attention_weighted_alignment(
-                step_embeddings.to(torch.bfloat16),
-                modal_embeddings.to(torch.bfloat16),
+                step_embeddings.float(),
+                modal_embeddings.float(),
                 return_attention=True,
             )
             results["weighted_alignment"] = weighted_alignment
