@@ -38,7 +38,7 @@ class ChainConfidenceScorer(nn.Module):
         nli_weight: float = 0.15,
         prm_weight: float = 0.15,
         use_learned_weights: bool = False,
-        feature_dim: int = 15  # Increased to 15 to accommodate new text features
+        feature_dim: int = 16  # 16 to include weighted_alignment feature
     ):
         super().__init__()
 
@@ -90,6 +90,7 @@ class ChainConfidenceScorer(nn.Module):
             internal_scores['semantic_density'],
             cross_modal_scores['overall'],
             cross_modal_scores.get('alignment', torch.tensor(0.0)),
+            cross_modal_scores.get('weighted_alignment', torch.tensor(0.0)),
         ]
 
         if 'contrastive_score' in cross_modal_scores:
@@ -114,11 +115,11 @@ class ChainConfidenceScorer(nn.Module):
                 prm_scores['min_step_reward']
             ])
 
-        # Pad to fixed size (e.g., 15)
-        while len(features) < 15:
+        # Pad to fixed size
+        while len(features) < 16:
             features.append(torch.tensor(0.0).to(features[0].device if isinstance(features[0], torch.Tensor) else 'cpu'))
 
-        return torch.stack(features[:15])
+        return torch.stack(features[:16])
 
     def forward(
         self,

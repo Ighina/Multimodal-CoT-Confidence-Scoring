@@ -253,6 +253,17 @@ class CrossModalCoherenceMetric(nn.Module):
             results["std_step_coherence"] = results["per_step_coherence"].std()
             results["min_step_coherence"] = results["per_step_coherence"].min()
 
+            # Attention-weighted alignment: mean of per-modality weighted alignments
+            weighted_alignments = []
+            for mod_embeds in modal_embeddings.values():
+                if mod_embeds is None:
+                    continue
+                wa, _ = self.compute_attention_weighted_alignment(
+                    step_embeddings.float(), mod_embeds.float()
+                )
+                weighted_alignments.append(wa)
+            results["weighted_alignment"] = torch.stack(weighted_alignments).mean()
+
             return results
 
         # =====================================================================
@@ -263,14 +274,15 @@ class CrossModalCoherenceMetric(nn.Module):
         alignment = self.compute_step_modal_alignment(step_embeddings, modal_embeddings)
         results["alignment"] = alignment
 
-        # Attention-weighted alignment
+        # Attention-weighted alignment (always computed; attention weights only stored
+        # when use_attention=True to avoid bloating the result dict)
+        weighted_alignment, attention = self.compute_attention_weighted_alignment(
+            step_embeddings.float(),
+            modal_embeddings.float(),
+            return_attention=self.use_attention,
+        )
+        results["weighted_alignment"] = weighted_alignment
         if self.use_attention:
-            weighted_alignment, attention = self.compute_attention_weighted_alignment(
-                step_embeddings.float(),
-                modal_embeddings.float(),
-                return_attention=True,
-            )
-            results["weighted_alignment"] = weighted_alignment
             results["attention_weights"] = attention
 
         # Contrastive coherence
@@ -288,7 +300,7 @@ class CrossModalCoherenceMetric(nn.Module):
         results["min_step_coherence"] = per_step_scores.min()
 
         # Overall score (weighted combination)
-        if self.use_attention and "weighted_alignment" in results:
+        if self.use_attention:
             overall = results["weighted_alignment"]
         else:
             overall = alignment

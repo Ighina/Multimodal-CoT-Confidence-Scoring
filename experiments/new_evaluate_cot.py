@@ -173,6 +173,7 @@ def extract_score_arrays(
         "cross_modal_geometric_mean": [],
         "cross_modal_weighted_entropy": [],
         "cross_modal_variance_penalised": [],
+        "cross_modal_weighted_alignment": [],
         "cross_modal_max_coherence": [],
         "cross_modal_mean_coherence": [],
         "cross_modal_std_coherence": [],
@@ -221,6 +222,9 @@ def extract_score_arrays(
             )
             example_dict["cross_modal_weighted_entropy"].append(
                 score_dict.get("cross_modal", {}).get("entropy_weighted_alignment", 0.0)
+            )
+            example_dict["cross_modal_weighted_alignment"].append(
+                score_dict.get("cross_modal", {}).get("weighted_alignment", 0.0)
             )
             example_dict["cross_modal_max_coherence"].append(
                 score_dict.get("cross_modal", {}).get("max_step_coherence", 0.0)
@@ -390,6 +394,7 @@ def add_consensus_methods(
         "cross_modal_weighted_entropy",
         "cross_modal_geometric_mean",
         "cross_modal_variance_penalised",
+        "cross_modal_weighted_alignment",
         "umpire",
         "umpire_normalized",
         "mean_all",  # already in methods
@@ -497,6 +502,9 @@ def create_aggregation_methods(
         ]
         methods["cross_modal_variance_penalised"] = score_arrays[
             "cross_modal_variance_penalised"
+        ]
+        methods["cross_modal_weighted_alignment"] = score_arrays[
+            "cross_modal_weighted_alignment"
         ]
         methods["cross_modal_max_coherence"] = score_arrays["cross_modal_max_coherence"]
         methods["cross_modal_mean_coherence"] = score_arrays[
