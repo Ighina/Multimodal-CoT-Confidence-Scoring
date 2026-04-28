@@ -175,6 +175,8 @@ def extract_score_arrays(
         "cross_modal_variance_penalised": [],
         "cross_modal_weighted_alignment": [],
         "cross_modal_eb_variance_penalised": [],
+        "cross_modal_optimal_transport": [],
+        "cross_modal_ot_eb_variance_penalised": [],
         "cross_modal_max_coherence": [],
         "cross_modal_mean_coherence": [],
         "cross_modal_std_coherence": [],
@@ -229,6 +231,12 @@ def extract_score_arrays(
             )
             example_dict["cross_modal_eb_variance_penalised"].append(
                 score_dict.get("cross_modal", {}).get("eb_variance_penalised", 0.0)
+            )
+            example_dict["cross_modal_optimal_transport"].append(
+                score_dict.get("cross_modal", {}).get("optimal_transport_alignment", 0.0)
+            )
+            example_dict["cross_modal_ot_eb_variance_penalised"].append(
+                score_dict.get("cross_modal", {}).get("ot_eb_variance_penalised", 0.0)
             )
             example_dict["cross_modal_max_coherence"].append(
                 score_dict.get("cross_modal", {}).get("max_step_coherence", 0.0)
@@ -400,6 +408,8 @@ def add_consensus_methods(
         "cross_modal_variance_penalised",
         "cross_modal_weighted_alignment",
         "cross_modal_eb_variance_penalised",
+        "cross_modal_optimal_transport",
+        "cross_modal_ot_eb_variance_penalised",
         "umpire",
         "umpire_normalized",
         "mean_all",  # already in methods
@@ -513,6 +523,12 @@ def create_aggregation_methods(
         ]
         methods["cross_modal_eb_variance_penalised"] = score_arrays[
             "cross_modal_eb_variance_penalised"
+        ]
+        methods["cross_modal_optimal_transport"] = score_arrays[
+            "cross_modal_optimal_transport"
+        ]
+        methods["cross_modal_ot_eb_variance_penalised"] = score_arrays[
+            "cross_modal_ot_eb_variance_penalised"
         ]
         methods["cross_modal_max_coherence"] = score_arrays["cross_modal_max_coherence"]
         methods["cross_modal_mean_coherence"] = score_arrays[
@@ -717,6 +733,7 @@ def run_single_evaluation(
     shuffle: bool,
     seed: int = None,
     use_max_confidence: bool = False,
+    allowed_methods: Optional[List[str]] = None,
 ) -> Tuple[Dict, Dict]:
     """
     Run a single evaluation iteration.
@@ -756,6 +773,16 @@ def run_single_evaluation(
     confidence_methods = create_aggregation_methods(
         score_arrays, labels, answers=answers
     )
+
+    if allowed_methods is not None:
+        confidence_methods = {
+            name: conf 
+            for name, conf in confidence_methods.items() 
+            if name in allowed_methods
+        }
+        
+        if not confidence_methods:
+            raise ValueError("None of the specified --methods matched the generated methods.")
 
     if normalize:
         confidence_methods = {
@@ -925,6 +952,7 @@ def run_evaluation_for_split(
     multiple_iterations: int,
     label: str,
     use_max_confidence: bool = False,
+    allowed_methods: Optional[List[str]] = None,
 ) -> Dict:
     """
     Run evaluation (single or multiple experiments) for a given data split and
@@ -958,6 +986,7 @@ def run_evaluation_for_split(
                 shuffle=shuffle,
                 seed=i,
                 use_max_confidence=use_max_confidence,
+                allowed_methods = allowed_methods,
             )
             all_results.append(method_results)
             all_comparisons.append(comparison)
@@ -1023,6 +1052,19 @@ def print_split_summary(split_result: Dict, label: str, multiple_experiments: bo
                 f"    {i}. {m}: {metrics['mean']:.4f} "
                 f"(95% CI [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])"
             )
+
+        # Add this to print the statistical significance of the top methods
+        if "statistical_tests" in agg:
+            print("\n  Statistical Significance (Top Methods):")
+            for metric, tests in agg["statistical_tests"].items():
+                if not tests:
+                    continue
+                print(f"    {metric}:")
+                for test_name, test_data in tests.items():
+                    # Using Wilcoxon as the default non-parametric test to display
+                    is_sig = test_data['wilcoxon_test']['significant_at_0.05']
+                    p_val = test_data['wilcoxon_test']['p_value']
+                    print(f"      - {test_name}: Significant? {is_sig} (p={p_val:.4f})")
     else:
         method_results = split_result["method_results"]
         comparison = split_result["comparison"]
@@ -1214,6 +1256,14 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--methods",
+        nargs="+",
+        type=str,
+        default=None,
+        help="Optional list of specific method names to evaluate (e.g., --methods majority_vote mean_internal). If omitted, evaluates all methods.",
+    )
+
     args = parser.parse_args()
 
     if args.multiple_experiments and not args.shuffle:
@@ -1253,6 +1303,7 @@ def main():
         multiple_iterations=args.multiple_iterations,
         label="OVERALL",
         use_max_confidence=args.use_max_confidence,
+        allowed_methods=args.methods
     )
 
     print_split_summary(
@@ -1280,6 +1331,7 @@ def main():
             multiple_iterations=args.multiple_iterations,
             label=subset_name,
             use_max_confidence=args.use_max_confidence,
+            allowed_methods=args.methods
         )
 
         print_split_summary(

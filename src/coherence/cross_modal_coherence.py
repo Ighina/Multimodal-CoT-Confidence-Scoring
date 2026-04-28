@@ -164,6 +164,48 @@ class CrossModalCoherenceMetric(nn.Module):
             per_step_scores.append(max_sim)
 
         return torch.stack(per_step_scores)
+    
+    def compute_optimal_transport_alignment(
+        self,
+        step_embeddings: torch.Tensor,
+        modal_embeddings: torch.Tensor,
+        num_iters: int = 5,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute Sinkhorn OT alignment. 
+        Returns: (overall_score, per_step_scores)
+        """
+        if modal_embeddings.dim() == 1:
+            modal_embeddings = modal_embeddings.unsqueeze(0)
+            
+        num_steps = step_embeddings.size(0)
+        num_modals = modal_embeddings.size(0)
+
+        cost_matrix = -torch.matmul(step_embeddings, modal_embeddings.T) 
+        K = torch.exp(-cost_matrix / self.temperature)
+        
+        u = torch.ones(num_steps, dtype=K.dtype, device=K.device) / num_steps
+        v = torch.ones(num_modals, dtype=K.dtype, device=K.device) / num_modals
+        b = torch.ones(num_modals, dtype=K.dtype, device=K.device) / num_modals
+
+        # Sinkhorn Iterations
+        for _ in range(num_iters):
+            a = u / (torch.matmul(K, b) + 1e-8)
+            b = v / (torch.matmul(K.T, a) + 1e-8)
+
+        transport_plan = torch.diag(a) @ K @ torch.diag(b)
+        
+        actual_sims = torch.matmul(step_embeddings, modal_embeddings.T)
+        if self.similarity_metric == "cosine":
+            actual_sims = (actual_sims + 1.0) / 2.0
+
+        # Scale transport plan so weights for each step sum to 1
+        step_transport_weights = transport_plan * num_steps
+        
+        # Calculate score PER STEP
+        per_step_ot = torch.sum(step_transport_weights * actual_sims, dim=1)
+        
+        return per_step_ot.mean(), per_step_ot
 
     def forward(
         self,
@@ -286,6 +328,41 @@ class CrossModalCoherenceMetric(nn.Module):
                 weighted_alignments.append(wa)
             results["weighted_alignment"] = torch.stack(weighted_alignments).mean()
 
+            # --- Optimal Transport Alignment ---
+            ot_alignments = []
+            ot_per_step_list = []
+            
+            for mod_embeds in modal_embeddings.values():
+                if mod_embeds is None:
+                    continue
+                
+                # Calculate OT for Text -> Image, Text -> Audio, etc.
+                overall_ot, step_ot = self.compute_optimal_transport_alignment(
+                    step_embeddings.float(), mod_embeds.float()
+                )
+                ot_alignments.append(overall_ot)
+                ot_per_step_list.append(step_ot)
+            
+            if ot_alignments:
+                # 1. Overall mean OT alignment across all modalities
+                results["optimal_transport_alignment"] = torch.stack(ot_alignments).mean()
+                
+                # 2. OT + Variance Penalization (The Super Metric)
+                # We apply your James-Stein/EB variance penalty logic directly to the OT scores!
+                stacked_ot_per_step = torch.stack(ot_per_step_list) # (num_mods, num_steps)
+                
+                ot_step_var = torch.var(stacked_ot_per_step, dim=0, unbiased=False)
+                ot_pooled_var = torch.mean(ot_step_var)
+                
+                B = ot_pooled_var / (ot_step_var + ot_pooled_var + 1e-6)
+                ot_shrunk_var = (1 - B) * ot_step_var + B * ot_pooled_var
+                
+                ot_mu = torch.mean(stacked_ot_per_step, dim=0)
+                ot_variance_penalised = ot_mu - (self.variance_penalty_weight * ot_shrunk_var)
+                ot_variance_penalised = torch.clamp(ot_variance_penalised, min=0.0)
+                
+                results["ot_eb_variance_penalised"] = ot_variance_penalised.mean()
+
             return results
 
         # =====================================================================
@@ -332,6 +409,10 @@ class CrossModalCoherenceMetric(nn.Module):
             overall = 0.7 * overall + 0.3 * results["contrastive_score"]
 
         results["overall"] = overall
+        ot_score, _ = self.compute_optimal_transport_alignment(
+            step_embeddings.float(), modal_embeddings.float()
+        )
+        results["optimal_transport_alignment"] = ot_score
 
         return results
 

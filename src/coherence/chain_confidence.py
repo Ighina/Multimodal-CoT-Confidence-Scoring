@@ -38,7 +38,7 @@ class ChainConfidenceScorer(nn.Module):
         nli_weight: float = 0.15,
         prm_weight: float = 0.15,
         use_learned_weights: bool = False,
-        feature_dim: int = 16  # 16 to include weighted_alignment feature
+        feature_dim: int = 18  # 18 to include ot and ot_eb_variance_penalised features
     ):
         super().__init__()
 
@@ -92,6 +92,8 @@ class ChainConfidenceScorer(nn.Module):
             cross_modal_scores.get('alignment', torch.tensor(0.0)),
             cross_modal_scores.get('weighted_alignment', torch.tensor(0.0)),
             cross_modal_scores.get('eb_variance_penalised', torch.tensor(0.0)),
+            cross_modal_scores.get('optimal_transport_alignment', torch.tensor(0.0)),
+            cross_modal_scores.get('ot_eb_variance_penalised', torch.tensor(0.0)),
         ]
 
         if 'contrastive_score' in cross_modal_scores:
@@ -117,10 +119,10 @@ class ChainConfidenceScorer(nn.Module):
             ])
 
         # Pad to fixed size
-        while len(features) < 16:
+        while len(features) < 18:
             features.append(torch.tensor(0.0).to(features[0].device if isinstance(features[0], torch.Tensor) else 'cpu'))
 
-        return torch.stack(features[:16])
+        return torch.stack(features[:18])
 
     def forward(
         self,
