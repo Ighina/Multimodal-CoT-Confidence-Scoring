@@ -181,8 +181,25 @@ class CrossModalCoherenceMetric(nn.Module):
         num_steps = step_embeddings.size(0)
         num_modals = modal_embeddings.size(0)
 
-        cost_matrix = -torch.matmul(step_embeddings, modal_embeddings.T) 
-        K = torch.exp(-cost_matrix / self.temperature)
+        # 1. Normalize embeddings first if using cosine similarity!
+        if self.similarity_metric == "cosine":
+            step_emb = F.normalize(step_embeddings, p=2, dim=-1)
+            mod_emb = F.normalize(modal_embeddings, p=2, dim=-1)
+        else:
+            step_emb = step_embeddings
+            mod_emb = modal_embeddings
+
+        # Calculate similarity (which acts as negative cost)
+        sim_matrix = torch.matmul(step_emb, mod_emb.T) 
+        
+        # 2. NUMERICAL STABILITY TRICK
+        # Divide by temperature
+        exponent = sim_matrix / self.temperature
+        # Subtract the max value to prevent torch.exp() from overflowing to inf!
+        # This mathematically does not alter the Sinkhorn transport plan.
+        exponent = exponent - torch.max(exponent)
+        
+        K = torch.exp(exponent)
         
         u = torch.ones(num_steps, dtype=K.dtype, device=K.device) / num_steps
         v = torch.ones(num_modals, dtype=K.dtype, device=K.device) / num_modals
@@ -195,9 +212,11 @@ class CrossModalCoherenceMetric(nn.Module):
 
         transport_plan = torch.diag(a) @ K @ torch.diag(b)
         
-        actual_sims = torch.matmul(step_embeddings, modal_embeddings.T)
+        # Use the sim_matrix we already safely computed
         if self.similarity_metric == "cosine":
-            actual_sims = (actual_sims + 1.0) / 2.0
+            actual_sims = (sim_matrix + 1.0) / 2.0
+        else:
+            actual_sims = sim_matrix
 
         # Scale transport plan so weights for each step sum to 1
         step_transport_weights = transport_plan * num_steps
@@ -253,6 +272,7 @@ class CrossModalCoherenceMetric(nn.Module):
 
             modality_temperature = 0.1
             modality_weights = F.softmax(stacked_per_step / modality_temperature, dim=0)
+            no_normalized_weights = F.softmax(stacked_per_step, dim=0)
 
             # Entropy-weighted synergy (Replaces simple geometric mean)
             # This ensures that if a step is purely auditory, the visual penalty is muted
@@ -260,7 +280,12 @@ class CrossModalCoherenceMetric(nn.Module):
                 dim=0
             )
 
+            no_normalized_entropy = (stacked_per_step * no_normalized_weights).sum(
+                dim=0
+            )
+
             results["entropy_weighted_alignment"] = entropy_weighted_alignment.mean()
+            results["entropy_no_temperature_alignment"] = no_normalized_entropy.mean()
 
             # --- 2. Empirical Bayes / James-Stein Variance Shrinkage ---
             # Step variance: How much do modalities disagree on this specific step?
