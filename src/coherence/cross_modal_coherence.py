@@ -220,6 +220,28 @@ class CrossModalCoherenceMetric(nn.Module):
 
             results["entropy_weighted_alignment"] = entropy_weighted_alignment.mean()
 
+            # --- 2. Empirical Bayes / James-Stein Variance Shrinkage ---
+            # Step variance: How much do modalities disagree on this specific step?
+            step_var = torch.var(stacked_per_step, dim=0, unbiased=False)
+            
+            # Pooled variance: The prior "baseline" disagreement across the whole reasoning chain
+            pooled_var = torch.mean(step_var)
+            
+            # James-Stein Shrinkage Factor (B)
+            # If step_var is unusually huge (noise), B approaches 1, shrinking it to the pooled prior
+            epsilon = 1e-6
+            B = pooled_var / (step_var + pooled_var + epsilon)
+            
+            # Calculate Shrunk Variance
+            shrunk_var = (1 - B) * step_var + B * pooled_var
+            
+            # Calculate final EB-Penalized metric
+            mu = torch.mean(stacked_per_step, dim=0)
+            variance_penalised_per_step = mu - (self.variance_penalty_weight * shrunk_var)
+            variance_penalised_per_step = torch.clamp(variance_penalised_per_step, min=0.0)
+            
+            results['eb_variance_penalised'] = variance_penalised_per_step.mean()
+
             # Max alignment logic (represents modality collapse fallback)
             results["overall"] = alignments_tensor.max()
             results["alignment"] = alignments_tensor.mean()

@@ -91,6 +91,7 @@ class ChainConfidenceScorer(nn.Module):
             cross_modal_scores['overall'],
             cross_modal_scores.get('alignment', torch.tensor(0.0)),
             cross_modal_scores.get('weighted_alignment', torch.tensor(0.0)),
+            cross_modal_scores.get('eb_variance_penalised', torch.tensor(0.0)),
         ]
 
         if 'contrastive_score' in cross_modal_scores:

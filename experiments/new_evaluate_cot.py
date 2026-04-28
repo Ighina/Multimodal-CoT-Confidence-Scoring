@@ -174,6 +174,7 @@ def extract_score_arrays(
         "cross_modal_weighted_entropy": [],
         "cross_modal_variance_penalised": [],
         "cross_modal_weighted_alignment": [],
+        "cross_modal_eb_variance_penalised": [],
         "cross_modal_max_coherence": [],
         "cross_modal_mean_coherence": [],
         "cross_modal_std_coherence": [],
@@ -225,6 +226,9 @@ def extract_score_arrays(
             )
             example_dict["cross_modal_weighted_alignment"].append(
                 score_dict.get("cross_modal", {}).get("weighted_alignment", 0.0)
+            )
+            example_dict["cross_modal_eb_variance_penalised"].append(
+                score_dict.get("cross_modal", {}).get("eb_variance_penalised", 0.0)
             )
             example_dict["cross_modal_max_coherence"].append(
                 score_dict.get("cross_modal", {}).get("max_step_coherence", 0.0)
@@ -395,6 +399,7 @@ def add_consensus_methods(
         "cross_modal_geometric_mean",
         "cross_modal_variance_penalised",
         "cross_modal_weighted_alignment",
+        "cross_modal_eb_variance_penalised",
         "umpire",
         "umpire_normalized",
         "mean_all",  # already in methods
@@ -505,6 +510,9 @@ def create_aggregation_methods(
         ]
         methods["cross_modal_weighted_alignment"] = score_arrays[
             "cross_modal_weighted_alignment"
+        ]
+        methods["cross_modal_eb_variance_penalised"] = score_arrays[
+            "cross_modal_eb_variance_penalised"
         ]
         methods["cross_modal_max_coherence"] = score_arrays["cross_modal_max_coherence"]
         methods["cross_modal_mean_coherence"] = score_arrays[
@@ -730,9 +738,16 @@ def run_single_evaluation(
     if shuffle:
         if seed is not None:
             np.random.seed(seed)
-        random_indices = np.random.permutation(
-            max(len(example) for example in cots_data)
-        )[:n_chains].tolist()
+        
+        # Determine the maximum number of chains available
+        max_available = max(len(example) for example in cots_data)
+        
+        # Use sampling WITH replacement (Bootstrapping)
+        random_indices = np.random.choice(
+            max_available, 
+            size=n_chains, 
+            replace=True
+        ).tolist()
 
     labels = extract_labels(cots_data, n_chains, indices=random_indices)
     score_arrays = extract_score_arrays(scores_data, n_chains, indices=random_indices)
