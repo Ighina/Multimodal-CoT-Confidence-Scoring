@@ -164,7 +164,7 @@ class CrossModalCoherenceMetric(nn.Module):
             per_step_scores.append(max_sim)
 
         return torch.stack(per_step_scores)
-    
+
     def compute_optimal_transport_alignment(
         self,
         step_embeddings: torch.Tensor,
@@ -172,12 +172,12 @@ class CrossModalCoherenceMetric(nn.Module):
         num_iters: int = 5,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute Sinkhorn OT alignment. 
+        Compute Sinkhorn OT alignment.
         Returns: (overall_score, per_step_scores)
         """
         if modal_embeddings.dim() == 1:
             modal_embeddings = modal_embeddings.unsqueeze(0)
-            
+
         num_steps = step_embeddings.size(0)
         num_modals = modal_embeddings.size(0)
 
@@ -190,17 +190,17 @@ class CrossModalCoherenceMetric(nn.Module):
             mod_emb = modal_embeddings
 
         # Calculate similarity (which acts as negative cost)
-        sim_matrix = torch.matmul(step_emb, mod_emb.T) 
-        
+        sim_matrix = torch.matmul(step_emb, mod_emb.T)
+
         # 2. NUMERICAL STABILITY TRICK
         # Divide by temperature
         exponent = sim_matrix / self.temperature
         # Subtract the max value to prevent torch.exp() from overflowing to inf!
         # This mathematically does not alter the Sinkhorn transport plan.
         exponent = exponent - torch.max(exponent)
-        
+
         K = torch.exp(exponent)
-        
+
         u = torch.ones(num_steps, dtype=K.dtype, device=K.device) / num_steps
         v = torch.ones(num_modals, dtype=K.dtype, device=K.device) / num_modals
         b = torch.ones(num_modals, dtype=K.dtype, device=K.device) / num_modals
@@ -211,7 +211,7 @@ class CrossModalCoherenceMetric(nn.Module):
             b = v / (torch.matmul(K.T, a) + 1e-8)
 
         transport_plan = torch.diag(a) @ K @ torch.diag(b)
-        
+
         # Use the sim_matrix we already safely computed
         if self.similarity_metric == "cosine":
             actual_sims = (sim_matrix + 1.0) / 2.0
@@ -220,11 +220,93 @@ class CrossModalCoherenceMetric(nn.Module):
 
         # Scale transport plan so weights for each step sum to 1
         step_transport_weights = transport_plan * num_steps
-        
+
         # Calculate score PER STEP
         per_step_ot = torch.sum(step_transport_weights * actual_sims, dim=1)
-        
+
         return per_step_ot.mean(), per_step_ot
+
+    def compute_entropy_gated_routing(
+        self,
+        step_embeddings: torch.Tensor,
+        modal_embeddings: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Rewards steps that are highly confident in a SINGLE modality,
+        penalizing generic steps that weakly align with everything.
+        """
+        # 1. Collect per-step alignments for all valid modalities
+        # Shape will be: (num_modalities, num_steps)
+        per_step_alignments = []
+        for mod_embeds in modal_embeddings.values():
+            if mod_embeds is None:
+                continue
+            # Using your existing per-step method
+            per_step = self.compute_per_step_coherence(step_embeddings, mod_embeds)
+            per_step_alignments.append(per_step)
+
+        if not per_step_alignments:
+            return 0.0
+
+        stacked_alignments = torch.stack(per_step_alignments)  # (num_mods, num_steps)
+
+        # 2. Hard Max: For each step, only take the score of its BEST modality
+        max_scores_per_step, best_modality_idx = stacked_alignments.max(dim=0)
+
+        # 3. Decisiveness (Inverse Entropy): How sharp is the preference?
+        # We use softmax to turn the scores into a probability distribution over modalities
+        # A higher temperature makes it more forgiving.
+        routing_probs = F.softmax(
+            stacked_alignments / 0.05, dim=0
+        )  # (num_mods, num_steps)
+
+        # Calculate Shannon Entropy for each step: H = -sum(p * log(p))
+        # High entropy = confused/generic. Low entropy = decisively grounded.
+        entropy = -(routing_probs * torch.log(routing_probs + 1e-8)).sum(dim=0)
+
+        # Max possible entropy for N modalities is log(N)
+        max_entropy = torch.log(
+            torch.tensor(stacked_alignments.size(0), dtype=torch.float32)
+        )
+
+        # Convert to a "Decisiveness" weight (0 to 1)
+        # If entropy is 0 (100% confident in one modality), weight is 1.
+        # If entropy is max (evenly split), weight is 0.
+        decisiveness_weight = 1.0 - (entropy / (max_entropy + 1e-8))
+
+        # 4. Final Score: Max Score * Decisiveness
+        gated_step_scores = max_scores_per_step * decisiveness_weight
+
+        # Return the mean of these highly-filtered, grounded steps
+        return gated_step_scores.mean()
+
+    def compute_salience_weighted_alignment(
+        self,
+        step_embeddings: torch.Tensor,
+        modal_embeddings: torch.Tensor,
+        temperature: float = 0.05,
+    ) -> torch.Tensor:
+        """
+        Rewards 'anchor' steps that highly align with the modality,
+        muting the noise from purely logical/ungrounded steps.
+        """
+        # 1. Get the base alignment for each step
+        # This returns a tensor of shape (num_steps,)
+        per_step_scores = self.compute_per_step_coherence(
+            step_embeddings, modal_embeddings
+        )
+
+        # 2. Convert to Salience Weights
+        # Softmax over the steps. A very low temperature (e.g., 0.05) acts as a harsh filter.
+        # It forces the weights of the top 1 or 2 steps close to 1.0, and the rest to 0.0.
+        salience_weights = F.softmax(per_step_scores / temperature, dim=0)
+
+        # 3. Apply the weights
+        # Instead of a simple mean(), we take a weighted sum.
+        # This means your metric is dictated almost entirely by your best, most grounded steps.
+        salience_gated_score = torch.sum(per_step_scores * salience_weights)
+
+        return salience_gated_score
 
     def forward(
         self,
@@ -290,24 +372,28 @@ class CrossModalCoherenceMetric(nn.Module):
             # --- 2. Empirical Bayes / James-Stein Variance Shrinkage ---
             # Step variance: How much do modalities disagree on this specific step?
             step_var = torch.var(stacked_per_step, dim=0, unbiased=False)
-            
+
             # Pooled variance: The prior "baseline" disagreement across the whole reasoning chain
             pooled_var = torch.mean(step_var)
-            
+
             # James-Stein Shrinkage Factor (B)
             # If step_var is unusually huge (noise), B approaches 1, shrinking it to the pooled prior
             epsilon = 1e-6
             B = pooled_var / (step_var + pooled_var + epsilon)
-            
+
             # Calculate Shrunk Variance
             shrunk_var = (1 - B) * step_var + B * pooled_var
-            
+
             # Calculate final EB-Penalized metric
             mu = torch.mean(stacked_per_step, dim=0)
-            variance_penalised_per_step = mu - (self.variance_penalty_weight * shrunk_var)
-            variance_penalised_per_step = torch.clamp(variance_penalised_per_step, min=0.0)
-            
-            results['eb_variance_penalised'] = variance_penalised_per_step.mean()
+            variance_penalised_per_step = mu - (
+                self.variance_penalty_weight * shrunk_var
+            )
+            variance_penalised_per_step = torch.clamp(
+                variance_penalised_per_step, min=0.0
+            )
+
+            results["eb_variance_penalised"] = variance_penalised_per_step.mean()
 
             # Max alignment logic (represents modality collapse fallback)
             results["overall"] = alignments_tensor.max()
@@ -353,39 +439,50 @@ class CrossModalCoherenceMetric(nn.Module):
                 weighted_alignments.append(wa)
             results["weighted_alignment"] = torch.stack(weighted_alignments).mean()
 
+            # --- Entropy-Gated Modality Routing ---
+            results["entropy_gated_routing"] = self.compute_entropy_gated_routing(
+                step_embeddings.float(), modal_embeddings
+            )
+
             # --- Optimal Transport Alignment ---
             ot_alignments = []
             ot_per_step_list = []
-            
+
             for mod_embeds in modal_embeddings.values():
                 if mod_embeds is None:
                     continue
-                
+
                 # Calculate OT for Text -> Image, Text -> Audio, etc.
                 overall_ot, step_ot = self.compute_optimal_transport_alignment(
                     step_embeddings.float(), mod_embeds.float()
                 )
                 ot_alignments.append(overall_ot)
                 ot_per_step_list.append(step_ot)
-            
+
             if ot_alignments:
                 # 1. Overall mean OT alignment across all modalities
-                results["optimal_transport_alignment"] = torch.stack(ot_alignments).mean()
-                
+                results["optimal_transport_alignment"] = torch.stack(
+                    ot_alignments
+                ).mean()
+
                 # 2. OT + Variance Penalization (The Super Metric)
                 # We apply your James-Stein/EB variance penalty logic directly to the OT scores!
-                stacked_ot_per_step = torch.stack(ot_per_step_list) # (num_mods, num_steps)
-                
+                stacked_ot_per_step = torch.stack(
+                    ot_per_step_list
+                )  # (num_mods, num_steps)
+
                 ot_step_var = torch.var(stacked_ot_per_step, dim=0, unbiased=False)
                 ot_pooled_var = torch.mean(ot_step_var)
-                
+
                 B = ot_pooled_var / (ot_step_var + ot_pooled_var + 1e-6)
                 ot_shrunk_var = (1 - B) * ot_step_var + B * ot_pooled_var
-                
+
                 ot_mu = torch.mean(stacked_ot_per_step, dim=0)
-                ot_variance_penalised = ot_mu - (self.variance_penalty_weight * ot_shrunk_var)
+                ot_variance_penalised = ot_mu - (
+                    self.variance_penalty_weight * ot_shrunk_var
+                )
                 ot_variance_penalised = torch.clamp(ot_variance_penalised, min=0.0)
-                
+
                 results["ot_eb_variance_penalised"] = ot_variance_penalised.mean()
 
             return results
@@ -408,6 +505,14 @@ class CrossModalCoherenceMetric(nn.Module):
         results["weighted_alignment"] = weighted_alignment
         if self.use_attention:
             results["attention_weights"] = attention
+
+        # Salience-weighted alignment
+        salience_alignment = self.compute_salience_weighted_alignment(
+            step_embeddings.float(), modal_embeddings.float()
+        )
+
+        # TODO: this is a misnomer!!! It's not really "routing" since we only have one modality, but it does represent the same core idea of rewarding highly salient, grounded steps while muting generic ones.
+        results["entropy_gated_routing"] = salience_alignment
 
         # Contrastive coherence
         if negative_modal_embeddings is not None:

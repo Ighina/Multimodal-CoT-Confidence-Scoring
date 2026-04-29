@@ -95,6 +95,7 @@ class ChainConfidenceScorer(nn.Module):
             cross_modal_scores.get('optimal_transport_alignment', torch.tensor(0.0)),
             cross_modal_scores.get('ot_eb_variance_penalised', torch.tensor(0.0)),
             cross_modal_scores.get('entropy_no_temperature_alignment', torch.tensor(0.0)),
+            cross_modal_scores.get('entropy_gated_routing', torch.tensor(0.0)),
         ]
 
         if 'contrastive_score' in cross_modal_scores:

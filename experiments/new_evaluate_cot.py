@@ -178,6 +178,7 @@ def extract_score_arrays(
         "cross_modal_optimal_transport": [],
         "cross_modal_ot_eb_variance_penalised": [],
         "cross_modal_entropy_no_temperature": [],
+        "cross_modal_entropy_gated_routing": [],
         "cross_modal_max_coherence": [],
         "cross_modal_mean_coherence": [],
         "cross_modal_std_coherence": [],
@@ -241,6 +242,9 @@ def extract_score_arrays(
             )
             example_dict["cross_modal_entropy_no_temperature"].append(
                 score_dict.get("cross_modal", {}).get("entropy_no_temperature_alignment", 0.0)
+            )
+            example_dict["cross_modal_entropy_gated_routing"].append(
+                score_dict.get("cross_modal", {}).get("entropy_gated_routing", 0.0)
             )
             example_dict["cross_modal_max_coherence"].append(
                 score_dict.get("cross_modal", {}).get("max_step_coherence", 0.0)
@@ -415,6 +419,7 @@ def add_consensus_methods(
         "cross_modal_optimal_transport",
         "cross_modal_ot_eb_variance_penalised",
         "cross_modal_entropy_no_temperature",
+        "cross_modal_entropy_gated_routing",
         "umpire",
         "umpire_normalized",
         "mean_all",  # already in methods
@@ -537,6 +542,9 @@ def create_aggregation_methods(
         ]
         methods["cross_modal_entropy_no_temperature"] = score_arrays[
             "cross_modal_entropy_no_temperature"
+        ]
+        methods["cross_modal_entropy_gated_routing"] = score_arrays[
+            "cross_modal_entropy_gated_routing"
         ]
         methods["cross_modal_max_coherence"] = score_arrays["cross_modal_max_coherence"]
         methods["cross_modal_mean_coherence"] = score_arrays[
