@@ -750,6 +750,7 @@ def run_single_evaluation(
     seed: int = None,
     use_max_confidence: bool = False,
     allowed_methods: Optional[List[str]] = None,
+    global_max_available = None
 ) -> Tuple[Dict, Dict]:
     """
     Run a single evaluation iteration.
@@ -772,12 +773,13 @@ def run_single_evaluation(
         if seed is not None:
             np.random.seed(seed)
         
-        # Determine the maximum number of chains available
-        max_available = max(len(example) for example in cots_data)
+        # Always use the GLOBAL max_available, not the local one
+        pool_size = global_max_available if global_max_available is not None \
+                    else max(len(example) for example in cots_data)
         
         # Use sampling WITH replacement (Bootstrapping)
         random_indices = np.random.choice(
-            max_available, 
+            pool_size, 
             size=n_chains, 
             replace=True
         ).tolist()
@@ -969,6 +971,7 @@ def run_evaluation_for_split(
     label: str,
     use_max_confidence: bool = False,
     allowed_methods: Optional[List[str]] = None,
+    global_max_available = None
 ) -> Dict:
     """
     Run evaluation (single or multiple experiments) for a given data split and
@@ -1003,6 +1006,7 @@ def run_evaluation_for_split(
                 seed=i,
                 use_max_confidence=use_max_confidence,
                 allowed_methods = allowed_methods,
+                global_max_available = global_max_available
             )
             all_results.append(method_results)
             all_comparisons.append(comparison)
@@ -1026,6 +1030,7 @@ def run_evaluation_for_split(
             shuffle=shuffle,
             seed=42,
             use_max_confidence=use_max_confidence,
+            global_max_available = global_max_available
         )
         return {
             "method_results": method_results,
@@ -1337,6 +1342,8 @@ def main():
 
         print(f"\nRunning evaluation for subset '{subset_name}' (n={len(sub_cots)})...")
 
+        global_max_available = max(len(example) for example in cots_data)
+
         subset_results[subset_name] = run_evaluation_for_split(
             cots_data=sub_cots,
             scores_data=sub_scores,
@@ -1347,7 +1354,8 @@ def main():
             multiple_iterations=args.multiple_iterations,
             label=subset_name,
             use_max_confidence=args.use_max_confidence,
-            allowed_methods=args.methods
+            allowed_methods=args.methods,
+            global_max_available=global_max_available
         )
 
         print_split_summary(
