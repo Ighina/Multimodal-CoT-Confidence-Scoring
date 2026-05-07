@@ -892,7 +892,7 @@ def aggregate_multiple_results(
 
     aggregated = {}
     for method_name in all_method_names:
-        metrics = {"in_group_accuracy": [], "auc_roc": [], "ece": []}
+        metrics = {"in_group_accuracy": [], "auc_roc": [], "auc_pr": [], "auc_arc": [], "ece": []}
 
         for results in all_results:
             if method_name in results:
@@ -900,6 +900,8 @@ def aggregate_multiple_results(
                     results[method_name]["in_group_accuracy"]
                 )
                 metrics["auc_roc"].append(results[method_name]["auc_roc"])
+                metrics["auc_pr"].append(results[method_name]["auc_pr"])
+                metrics["auc_arc"].append(results[method_name]["auc_arc"])
                 metrics["ece"].append(results[method_name]["ece"])
 
         aggregated[method_name] = {}
@@ -923,7 +925,7 @@ def aggregate_multiple_results(
                     "n_iterations": n,
                 }
 
-    ranking_keys = ["in_group_accuracy_ranking", "auc_roc_ranking", "ece_ranking"]
+    ranking_keys = ["in_group_accuracy_ranking", "auc_roc_ranking", "auc_pr_ranking", "auc_arc_ranking", "ece_ranking"]
     aggregated_rankings = {}
 
     for ranking_key in ranking_keys:
@@ -945,6 +947,8 @@ def aggregate_multiple_results(
     test_configs = [
         ("in_group_accuracy_ranking", "in_group_accuracy", "in_group_accuracy_tests"),
         ("auc_roc_ranking", "auc_roc", "auc_roc_tests"),
+        ("auc_pr_ranking", "auc_pr", "auc_pr_tests"),
+        ("auc_arc_ranking", "auc_arc", "auc_arc_tests"),
         ("ece_ranking", "ece", "ece_tests"),
     ]
 
@@ -1119,7 +1123,7 @@ def _method_rows(
 
         if multiple_experiments and aggregation is not None:
             agg_m = aggregation["aggregated_metrics"].get(method, {})
-            for metric in ("in_group_accuracy", "auc_roc", "ece"):
+            for metric in ("in_group_accuracy", "auc_roc", "auc_pr", "auc_arc", "ece"):
                 m = agg_m.get(metric, {})
                 row[f"{metric}_mean"] = round(m.get("mean", float("nan")), 6)
                 row[f"{metric}_std"] = round(m.get("std", float("nan")), 6)
@@ -1134,6 +1138,8 @@ def _method_rows(
                 res.get("in_group_accuracy", float("nan")), 6
             )
             row["auc_roc"] = round(res.get("auc_roc", float("nan")), 6)
+            row["auc_pr"] = round(res.get("auc_pr", float("nan")), 6)
+            row["auc_arc"] = round(res.get("auc_arc", float("nan")), 6)
             row["ece"] = round(res.get("ece", float("nan")), 6)
 
         rows.append(row)
@@ -1220,6 +1226,327 @@ def save_subsets_csv(
     print(f"  Subsets CSV saved to: {csv_path}")
 
 
+def _build_plot_data(
+    split_result: Dict,
+    multiple_experiments: bool,
+    metric: str,
+    lower_is_better: bool,
+    top_n: int,
+) -> Tuple[List[str], List[float], Optional[np.ndarray]]:
+    """
+    Extract sorted method names, values, and optional asymmetric CI error bars.
+
+    Returns:
+        (methods, values, xerr)  where xerr has shape (2, n) [lower_err, upper_err]
+        or None when no CI data is available (single-run mode).
+    """
+    if multiple_experiments and "aggregation" in split_result:
+        agg = split_result["aggregation"]["aggregated_metrics"]
+        entries = []
+        for method, metrics in agg.items():
+            if metric in metrics:
+                m = metrics[metric]
+                entries.append((method, m["mean"], m["ci_95_lower"], m["ci_95_upper"]))
+        entries.sort(key=lambda x: x[1], reverse=not lower_is_better)
+        entries = entries[:top_n]
+        if not entries:
+            return [], [], None
+        methods = [e[0] for e in entries]
+        values = [e[1] for e in entries]
+        err_lower = np.maximum(0.0, np.array([e[1] - e[2] for e in entries]))
+        err_upper = np.maximum(0.0, np.array([e[3] - e[1] for e in entries]))
+        return methods, values, np.array([err_lower, err_upper])
+    else:
+        method_results = split_result["method_results"]
+        entries = []
+        for method, results in method_results.items():
+            val = results.get(metric)
+            if val is not None and not (isinstance(val, float) and np.isnan(val)):
+                entries.append((method, float(val)))
+        entries.sort(key=lambda x: x[1], reverse=not lower_is_better)
+        entries = entries[:top_n]
+        if not entries:
+            return [], [], None
+        methods = [e[0] for e in entries]
+        values = [e[1] for e in entries]
+        return methods, values, None
+
+
+def plot_results(
+    overall_result: Dict,
+    subset_results: Dict[str, Dict],
+    multiple_experiments: bool,
+    output_path: Path,
+    top_n: int = 20,
+) -> None:
+    """
+    Create horizontal bar charts comparing methods for each split.
+
+    One PNG is saved per split (OVERALL + each subset).  Each figure contains
+    five subplots — one per metric.  When multiple_experiments is True, 95 % CI
+    error bars are drawn for each bar.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("  Warning: matplotlib not available — install it to use --plot.")
+        return
+
+    metrics_config = [
+        ("in_group_accuracy", "In-Group Accuracy", False),
+        ("auc_roc", "AUC-ROC", False),
+        ("auc_pr", "AUC-PR", False),
+        ("auc_arc", "AUC-ARC", False),
+        ("ece", "ECE  (lower ↓)", True),
+    ]
+    n_metrics = len(metrics_config)
+
+    splits = {"OVERALL": overall_result, **subset_results}
+
+    for split_name, split_result in splits.items():
+        safe_name = (
+            split_name.replace("/", "_").replace(" ", "_").replace(":", "")
+        )
+        n_examples = split_result.get("n_examples", "?")
+
+        fig_height = max(6, top_n * 0.45 + 2)
+        fig_width = n_metrics * 6
+
+        fig, axes = plt.subplots(1, n_metrics, figsize=(fig_width, fig_height))
+        if n_metrics == 1:
+            axes = [axes]
+
+        ci_note = "  (bars = 95 % CI)" if multiple_experiments else ""
+        fig.suptitle(
+            f"Method Comparison — {split_name}  (n={n_examples}){ci_note}",
+            fontsize=13,
+            fontweight="bold",
+            y=1.01,
+        )
+
+        for ax, (metric, title, lower_is_better) in zip(axes, metrics_config):
+            methods, values, xerr = _build_plot_data(
+                split_result, multiple_experiments, metric, lower_is_better, top_n
+            )
+
+            if not methods:
+                ax.text(
+                    0.5, 0.5, "No data", ha="center", va="center",
+                    transform=ax.transAxes,
+                )
+                ax.set_title(title, fontsize=10, fontweight="bold")
+                continue
+
+            # Reverse so the best method appears at the top of the chart
+            methods = methods[::-1]
+            values = values[::-1]
+            if xerr is not None:
+                xerr = xerr[:, ::-1]
+
+            color = "#d62728" if lower_is_better else "#1f77b4"
+            y_pos = range(len(methods))
+
+            if xerr is not None:
+                ax.barh(
+                    y_pos, values, xerr=xerr,
+                    color=color, alpha=0.75,
+                    error_kw={"ecolor": "dimgray", "capsize": 3, "linewidth": 1},
+                )
+            else:
+                ax.barh(y_pos, values, color=color, alpha=0.75)
+
+            ax.set_yticks(list(y_pos))
+            ax.set_yticklabels(methods, fontsize=7)
+            ax.set_title(title, fontsize=10, fontweight="bold")
+            ax.set_xlabel("Value", fontsize=9)
+            ax.margins(x=0.18)
+
+            # Inline value labels
+            x_max = ax.get_xlim()[1]
+            nudge = x_max * 0.01
+            for i, v in enumerate(values):
+                ax.text(v + nudge, i, f"{v:.4f}", va="center", fontsize=6.5)
+
+        plt.tight_layout()
+        plot_path = output_path.with_name(
+            output_path.stem + f"_plot_{safe_name}.png"
+        )
+        plt.savefig(plot_path, bbox_inches="tight", dpi=150)
+        plt.close(fig)
+        print(f"  Plot saved to: {plot_path}")
+
+
+def _get_metric_value(
+    split_result: Dict,
+    multiple_experiments: bool,
+    method: str,
+    metric: str,
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Return (mean, ci_lower, ci_upper) for a method/metric; (None, None, None) if missing."""
+    if multiple_experiments and "aggregation" in split_result:
+        agg = split_result["aggregation"]["aggregated_metrics"]
+        if method in agg and metric in agg[method]:
+            m = agg[method][metric]
+            return m["mean"], m["ci_95_lower"], m["ci_95_upper"]
+        return None, None, None
+    else:
+        results = split_result["method_results"].get(method)
+        if results is None:
+            return None, None, None
+        val = results.get(metric)
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return None, None, None
+        return float(val), None, None
+
+
+def _select_methods_for_line_plot(
+    n_values: List[int],
+    all_n_overall: Dict[int, Dict],
+    multiple_experiments: bool,
+    top_n: int,
+    rank_metric: str = "in_group_accuracy",
+) -> List[str]:
+    """Pick top methods by average value of rank_metric across all n evaluations."""
+    method_values: Dict[str, List[float]] = {}
+    for n in n_values:
+        overall = all_n_overall[n]
+        if multiple_experiments and "aggregation" in overall:
+            for method, metrics in overall["aggregation"]["aggregated_metrics"].items():
+                if rank_metric in metrics:
+                    method_values.setdefault(method, []).append(
+                        metrics[rank_metric]["mean"]
+                    )
+        else:
+            for method, results in overall["method_results"].items():
+                val = results.get(rank_metric)
+                if val is not None:
+                    method_values.setdefault(method, []).append(float(val))
+    method_mean = {m: float(np.mean(v)) for m, v in method_values.items() if v}
+    return sorted(method_mean, key=lambda m: method_mean[m], reverse=True)[:top_n]
+
+
+def plot_multi_n_results(
+    n_values: List[int],
+    all_n_overall: Dict[int, Dict],
+    all_n_subsets: Dict[int, Dict[str, Dict]],
+    multiple_experiments: bool,
+    experiment_dir: Path,
+    experiment_name: str,
+    top_n: int = 10,
+    selected_methods: Optional[List[str]] = None,
+) -> None:
+    """
+    Create one line-plot figure per split (OVERALL + each subset).
+
+    Each figure has five subplots (one per metric).  Each line represents one
+    method across the evaluated n values.  When multiple_experiments is True,
+    a shaded band shows the 95 % CI around the line.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.cm import get_cmap
+    except ImportError:
+        print("  Warning: matplotlib not available — install it to use --plot.")
+        return
+
+    metrics_config = [
+        ("in_group_accuracy", "In-Group Accuracy", False),
+        ("auc_roc", "AUC-ROC", False),
+        ("auc_pr", "AUC-PR", False),
+        ("auc_arc", "AUC-ARC", False),
+        ("ece", "ECE  (lower ↓)", True),
+    ]
+    n_metrics = len(metrics_config)
+
+    methods_to_plot = (
+        selected_methods
+        if selected_methods
+        else _select_methods_for_line_plot(
+            n_values, all_n_overall, multiple_experiments, top_n
+        )
+    )
+
+    first_n = n_values[0]
+    subset_names = sorted(all_n_subsets[first_n].keys())
+    splits = [("OVERALL", None)] + [(name, name) for name in subset_names]
+
+    cmap = get_cmap("tab20")
+    n_methods = max(len(methods_to_plot), 1)
+    colors = [cmap(i / n_methods) for i in range(len(methods_to_plot))]
+
+    ci_note = "  (shaded = 95 % CI)" if multiple_experiments else ""
+
+    for split_label, subset_key in splits:
+        safe_name = (
+            split_label.replace("/", "_").replace(" ", "_").replace(":", "")
+        )
+
+        fig, axes = plt.subplots(1, n_metrics, figsize=(n_metrics * 5, 5))
+        if n_metrics == 1:
+            axes = [axes]
+
+        fig.suptitle(
+            f"{experiment_name} — {split_label}{ci_note}",
+            fontsize=13,
+            fontweight="bold",
+        )
+
+        for ax, (metric, title, _) in zip(axes, metrics_config):
+            for method, color in zip(methods_to_plot, colors):
+                xs, ys, ci_los, ci_his = [], [], [], []
+                for n in n_values:
+                    split_result = (
+                        all_n_overall[n]
+                        if subset_key is None
+                        else all_n_subsets[n].get(subset_key)
+                    )
+                    if split_result is None:
+                        continue
+                    val, ci_lo, ci_hi = _get_metric_value(
+                        split_result, multiple_experiments, method, metric
+                    )
+                    if val is None:
+                        continue
+                    xs.append(n)
+                    ys.append(val)
+                    if ci_lo is not None:
+                        ci_los.append(ci_lo)
+                        ci_his.append(ci_hi)
+
+                if not xs:
+                    continue
+                ax.plot(xs, ys, marker="o", color=color, label=method, linewidth=1.5)
+                if ci_los and len(ci_los) == len(xs):
+                    ax.fill_between(xs, ci_los, ci_his, color=color, alpha=0.15)
+
+            ax.set_title(title, fontsize=10, fontweight="bold")
+            ax.set_xlabel("n chains", fontsize=9)
+            ax.set_ylabel("Value", fontsize=9)
+            ax.set_xticks(n_values)
+            ax.grid(True, alpha=0.3)
+
+        handles, labels = axes[0].get_legend_handles_labels()
+        if handles:
+            fig.legend(
+                handles,
+                labels,
+                loc="lower center",
+                ncol=min(len(methods_to_plot), 5),
+                fontsize=7,
+                bbox_to_anchor=(0.5, -0.12),
+            )
+
+        plt.tight_layout()
+        plot_path = experiment_dir / f"line_plot_{safe_name}.png"
+        plt.savefig(plot_path, bbox_inches="tight", dpi=150)
+        plt.close(fig)
+        print(f"  Line plot saved to: {plot_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate CoT results with different confidence aggregation methods"
@@ -1236,14 +1563,32 @@ def main():
     parser.add_argument(
         "--n_chains",
         type=int,
-        required=True,
-        help="Number of chains to analyze per example",
+        default=None,
+        help="Number of chains to analyze per example (mutually exclusive with --n_chains_list)",
+    )
+    parser.add_argument(
+        "--n_chains_list",
+        nargs="+",
+        type=int,
+        default=None,
+        help=(
+            "List of n values to sweep (e.g. --n_chains_list 3 5 10). "
+            "Requires --experiment_name. Results go into per-n subfolders inside "
+            "<output_file parent>/<experiment_name>/n_<k>/. "
+            "Mutually exclusive with --n_chains."
+        ),
+    )
+    parser.add_argument(
+        "--experiment_name",
+        type=str,
+        default=None,
+        help="Name for the experiment folder (required with --n_chains_list).",
     )
     parser.add_argument(
         "--output_file",
         type=str,
         required=True,
-        help="Path to save the final JSON results",
+        help="Path to save the final JSON results (single-n) or the filename template (multi-n).",
     )
     parser.add_argument(
         "--normalize",
@@ -1276,29 +1621,61 @@ def main():
             "instead of flattening all chains."
         ),
     )
-
     parser.add_argument(
         "--methods",
         nargs="+",
         type=str,
         default=None,
-        help="Optional list of specific method names to evaluate (e.g., --methods majority_vote mean_internal). If omitted, evaluates all methods.",
+        help=(
+            "Optional list of specific method names to evaluate. "
+            "If omitted, evaluates all methods. "
+            "In multi-n mode these are also the only methods shown in line plots."
+        ),
+    )
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help=(
+            "Generate plots after evaluation. "
+            "Single-n: horizontal bar charts per split. "
+            "Multi-n: bar charts per (n, split) plus one line plot per split "
+            "showing metric vs n with optional CI shading."
+        ),
+    )
+    parser.add_argument(
+        "--plot_top_n",
+        type=int,
+        default=20,
+        help=(
+            "Max methods shown per metric in bar charts (default: 20). "
+            "In multi-n line plots, controls how many methods are drawn when "
+            "--methods is not specified."
+        ),
     )
 
     args = parser.parse_args()
 
+    # ------------------------------------------------------------------ #
+    # Argument validation                                                  #
+    # ------------------------------------------------------------------ #
     if args.multiple_experiments and not args.shuffle:
         parser.error("--multiple_experiments requires --shuffle to be enabled")
+    if args.n_chains is None and args.n_chains_list is None:
+        parser.error("Either --n_chains or --n_chains_list must be provided.")
+    if args.n_chains is not None and args.n_chains_list is not None:
+        parser.error("--n_chains and --n_chains_list are mutually exclusive.")
+    if args.n_chains_list is not None and args.experiment_name is None:
+        parser.error("--n_chains_list requires --experiment_name.")
 
+    # ------------------------------------------------------------------ #
+    # Load data (shared by both evaluation modes)                         #
+    # ------------------------------------------------------------------ #
     print(f"Loading CoTs from: {args.cots_path}")
     cots_data = load_json(args.cots_path)
 
     print(f"Loading scores from: {args.scores_path}")
     scores_data = load_json(args.scores_path)
 
-    # ------------------------------------------------------------------ #
-    # Load the original dataset and build subset index                    #
-    # ------------------------------------------------------------------ #
     print("Loading original dataset (meituan-longcat/UNO-bench) to extract subsets...")
     original_data = load_dataset("meituan-longcat/UNO-bench")["validation"]
 
@@ -1307,66 +1684,8 @@ def main():
     subset_names = sorted(subset_index.keys())
     print(f"Found {len(subset_names)} subset(s): {subset_names}")
 
-    # ------------------------------------------------------------------ #
-    # Overall evaluation                                                   #
-    # ------------------------------------------------------------------ #
-    print("\n" + "=" * 80)
-    print("Running OVERALL evaluation...")
-    print("=" * 80)
+    global_max_available = max(len(example) for example in cots_data)
 
-    overall_result = run_evaluation_for_split(
-        cots_data=cots_data,
-        scores_data=scores_data,
-        n_chains=args.n_chains,
-        normalize=args.normalize,
-        shuffle=args.shuffle,
-        multiple_experiments=args.multiple_experiments,
-        multiple_iterations=args.multiple_iterations,
-        label="OVERALL",
-        use_max_confidence=args.use_max_confidence,
-        allowed_methods=args.methods
-    )
-
-    print_split_summary(
-        overall_result, label="OVERALL", multiple_experiments=args.multiple_experiments
-    )
-
-    # ------------------------------------------------------------------ #
-    # Per-subset evaluation                                                #
-    # ------------------------------------------------------------------ #
-    subset_results: Dict[str, Dict] = {}
-
-    for subset_name in subset_names:
-        indices = subset_index[subset_name]
-        sub_cots, sub_scores = filter_data_by_indices(cots_data, scores_data, indices)
-
-        print(f"\nRunning evaluation for subset '{subset_name}' (n={len(sub_cots)})...")
-
-        global_max_available = max(len(example) for example in cots_data)
-
-        subset_results[subset_name] = run_evaluation_for_split(
-            cots_data=sub_cots,
-            scores_data=sub_scores,
-            n_chains=args.n_chains,
-            normalize=args.normalize,
-            shuffle=args.shuffle,
-            multiple_experiments=args.multiple_experiments,
-            multiple_iterations=args.multiple_iterations,
-            label=subset_name,
-            use_max_confidence=args.use_max_confidence,
-            allowed_methods=args.methods,
-            global_max_available=global_max_available
-        )
-
-        print_split_summary(
-            subset_results[subset_name],
-            label=subset_name,
-            multiple_experiments=args.multiple_experiments,
-        )
-
-    # ------------------------------------------------------------------ #
-    # Serialization helpers                                                #
-    # ------------------------------------------------------------------ #
     def convert_to_serializable(obj):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
@@ -1383,50 +1702,187 @@ def main():
         else:
             return obj
 
+    def _run_subsets(n: int) -> Dict[str, Dict]:
+        results: Dict[str, Dict] = {}
+        for subset_name in subset_names:
+            indices = subset_index[subset_name]
+            sub_cots, sub_scores = filter_data_by_indices(
+                cots_data, scores_data, indices
+            )
+            print(
+                f"\nRunning evaluation for subset '{subset_name}' "
+                f"(n_examples={len(sub_cots)}, n_chains={n})..."
+            )
+            results[subset_name] = run_evaluation_for_split(
+                cots_data=sub_cots,
+                scores_data=sub_scores,
+                n_chains=n,
+                normalize=args.normalize,
+                shuffle=args.shuffle,
+                multiple_experiments=args.multiple_experiments,
+                multiple_iterations=args.multiple_iterations,
+                label=subset_name,
+                use_max_confidence=args.use_max_confidence,
+                allowed_methods=args.methods,
+                global_max_available=global_max_available,
+            )
+            print_split_summary(
+                results[subset_name],
+                label=subset_name,
+                multiple_experiments=args.multiple_experiments,
+            )
+        return results
+
+    def _assemble_output(n: int, overall_result: Dict, subset_results: Dict) -> Dict:
+        output = {
+            "method_results": overall_result["method_results"],
+            "comparison": overall_result["comparison"],
+            "subset_results": subset_results,
+            "metadata": {
+                "n_chains": n,
+                "n_examples": len(cots_data),
+                "subsets": subset_names,
+                "cots_path": args.cots_path,
+                "scores_path": args.scores_path,
+                "normalized": args.normalize,
+                "shuffled": args.shuffle,
+                "multiple_experiments": args.multiple_experiments,
+                "multiple_iterations": (
+                    args.multiple_iterations if args.multiple_experiments else 1
+                ),
+                "use_max_confidence": args.use_max_confidence,
+            },
+        }
+        if "aggregation" in overall_result:
+            output["aggregation"] = overall_result["aggregation"]
+        return convert_to_serializable(output)
+
     # ------------------------------------------------------------------ #
-    # Assemble and save output                                             #
+    # Multi-n evaluation mode                                              #
     # ------------------------------------------------------------------ #
-    output = {
-        # Overall results (mirrors original top-level structure)
-        "method_results": overall_result["method_results"],
-        "comparison": overall_result["comparison"],
-        # Per-subset results
-        "subset_results": subset_results,
-        "metadata": {
-            "n_chains": args.n_chains,
-            "n_examples": len(cots_data),
-            "subsets": subset_names,
-            "cots_path": args.cots_path,
-            "scores_path": args.scores_path,
-            "normalized": args.normalize,
-            "shuffled": args.shuffle,
-            "multiple_experiments": args.multiple_experiments,
-            "multiple_iterations": (
-                args.multiple_iterations if args.multiple_experiments else 1
-            ),
-            "use_max_confidence": args.use_max_confidence,
-        },
-    }
+    if args.n_chains_list is not None:
+        output_file_path = Path(args.output_file)
+        experiment_dir = output_file_path.parent / args.experiment_name
+        experiment_dir.mkdir(parents=True, exist_ok=True)
 
-    # Attach aggregation at the top level if present
-    if "aggregation" in overall_result:
-        output["aggregation"] = overall_result["aggregation"]
+        all_n_overall: Dict[int, Dict] = {}
+        all_n_subsets: Dict[int, Dict[str, Dict]] = {}
 
-    output = convert_to_serializable(output)
+        for n in args.n_chains_list:
+            print(f"\n{'#' * 80}")
+            print(f"# Evaluating with n_chains = {n}")
+            print(f"{'#' * 80}")
 
-    print(f"\nSaving results to: {args.output_file}")
+            n_output_path = experiment_dir / f"n_{n}" / output_file_path.name
+            n_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            print("\n" + "=" * 80)
+            print(f"Running OVERALL evaluation (n_chains={n})...")
+            print("=" * 80)
+
+            n_overall = run_evaluation_for_split(
+                cots_data=cots_data,
+                scores_data=scores_data,
+                n_chains=n,
+                normalize=args.normalize,
+                shuffle=args.shuffle,
+                multiple_experiments=args.multiple_experiments,
+                multiple_iterations=args.multiple_iterations,
+                label="OVERALL",
+                use_max_confidence=args.use_max_confidence,
+                allowed_methods=args.methods,
+                global_max_available=global_max_available,
+            )
+            print_split_summary(n_overall, "OVERALL", args.multiple_experiments)
+
+            n_subsets = _run_subsets(n)
+
+            all_n_overall[n] = n_overall
+            all_n_subsets[n] = n_subsets
+
+            # Save JSON
+            with open(n_output_path, "w") as f:
+                json.dump(_assemble_output(n, n_overall, n_subsets), f, indent=2)
+            print(f"  Results saved to: {n_output_path}")
+
+            # CSV tables
+            save_overall_csv(n_output_path, n_overall, args.multiple_experiments)
+            save_subsets_csv(n_output_path, n_subsets, args.multiple_experiments)
+
+            # Per-n bar charts
+            if args.plot:
+                print(f"  Generating bar charts for n_chains={n}...")
+                plot_results(
+                    overall_result=n_overall,
+                    subset_results=n_subsets,
+                    multiple_experiments=args.multiple_experiments,
+                    output_path=n_output_path,
+                    top_n=args.plot_top_n,
+                )
+
+        # Line plots across all n values
+        if args.plot:
+            print("\nGenerating multi-n line plots...")
+            plot_multi_n_results(
+                n_values=args.n_chains_list,
+                all_n_overall=all_n_overall,
+                all_n_subsets=all_n_subsets,
+                multiple_experiments=args.multiple_experiments,
+                experiment_dir=experiment_dir,
+                experiment_name=args.experiment_name,
+                top_n=args.plot_top_n,
+                selected_methods=args.methods,
+            )
+
+        print("\nDone!")
+        return
+
+    # ------------------------------------------------------------------ #
+    # Single-n evaluation mode                                             #
+    # ------------------------------------------------------------------ #
+    print("\n" + "=" * 80)
+    print("Running OVERALL evaluation...")
+    print("=" * 80)
+
+    overall_result = run_evaluation_for_split(
+        cots_data=cots_data,
+        scores_data=scores_data,
+        n_chains=args.n_chains,
+        normalize=args.normalize,
+        shuffle=args.shuffle,
+        multiple_experiments=args.multiple_experiments,
+        multiple_iterations=args.multiple_iterations,
+        label="OVERALL",
+        use_max_confidence=args.use_max_confidence,
+        allowed_methods=args.methods,
+    )
+    print_split_summary(
+        overall_result, label="OVERALL", multiple_experiments=args.multiple_experiments
+    )
+
+    subset_results = _run_subsets(args.n_chains)
+
     output_path = Path(args.output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
+    print(f"\nSaving results to: {args.output_file}")
     with open(output_path, "w") as f:
-        json.dump(output, f, indent=2)
+        json.dump(
+            _assemble_output(args.n_chains, overall_result, subset_results), f, indent=2
+        )
 
-    # ------------------------------------------------------------------ #
-    # CSV tables                                                           #
-    # ------------------------------------------------------------------ #
     print("\nGenerating CSV tables...")
     save_overall_csv(output_path, overall_result, args.multiple_experiments)
     save_subsets_csv(output_path, subset_results, args.multiple_experiments)
+
+    if args.plot:
+        print("\nGenerating plots...")
+        plot_results(
+            overall_result=overall_result,
+            subset_results=subset_results,
+            multiple_experiments=args.multiple_experiments,
+            output_path=output_path,
+            top_n=args.plot_top_n,
+        )
 
     print("\nDone!")
 

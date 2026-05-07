@@ -170,6 +170,38 @@ def compute_ece(confidences: np.ndarray, labels: np.ndarray, n_bins: int = 10) -
     return result["ece"]
 
 
+def compute_auc_arc(confidences: np.ndarray, labels: np.ndarray) -> float:
+    """
+    Compute Area Under the Accuracy-Reject Curve (AUC-ARC).
+
+    Sorts samples by confidence ascending (least confident rejected first) and
+    tracks the accuracy of the remaining samples at each rejection threshold.
+    Higher AUC-ARC is better.
+
+    Args:
+        confidences: Confidence scores (N,)
+        labels: Binary labels (N,) — 1 correct, 0 incorrect
+
+    Returns:
+        AUC-ARC score
+    """
+    n = len(confidences)
+    if n < 2:
+        return float("nan")
+
+    sort_idx = np.argsort(confidences)  # ascending: least confident first
+    sorted_labels = labels[sort_idx]
+
+    rejection_rates = []
+    accuracies = []
+    for i in range(n):
+        remaining = sorted_labels[i:]
+        rejection_rates.append(i / n)
+        accuracies.append(remaining.mean())
+
+    return float(np.trapz(accuracies, rejection_rates))
+
+
 def compute_risk_coverage(
     confidences: np.ndarray,
     labels: np.ndarray,
@@ -214,7 +246,8 @@ def compute_risk_coverage(
     # Compute AUC of risk-coverage curve
     # Lower AUC is better (less risk at same coverage)
     if len(coverages) > 1:
-        auc = np.trapz(risks, coverages)
+        sort_idx = np.argsort(coverages)
+        auc = np.trapezoid(np.array(risks)[sort_idx], np.array(coverages)[sort_idx])
     else:
         auc = 0.0
 
@@ -334,6 +367,7 @@ def evaluate_confidence_scores(
     # AUC metrics
     results["auc_roc"] = compute_auc_roc(confidences, labels)
     results["auc_pr"] = compute_auc_pr(confidences, labels)
+    results["auc_arc"] = compute_auc_arc(confidences, labels)
 
     # Calibration
     calibration = compute_calibration_error(confidences, labels, n_bins)
@@ -380,7 +414,7 @@ def compare_methods(method_results: Dict[str, Dict]) -> Dict:
     comparison = {}
 
     # Compare key metrics
-    metrics_to_compare = ["auc_roc", "auc_pr", "ece", "mce", "in_group_accuracy"]
+    metrics_to_compare = ["auc_roc", "auc_pr", "auc_arc", "ece", "mce", "in_group_accuracy"]
 
     for metric in metrics_to_compare:
         comparison[metric] = {
