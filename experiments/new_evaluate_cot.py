@@ -496,10 +496,8 @@ def create_aggregation_methods(
 
     # Random baseline - randomly select one chain per example
     n_examples, n_chains_count = labels.shape
-    random_selection = np.zeros((n_examples, n_chains_count))
-    random_chain_indices = np.random.randint(0, n_chains_count, size=n_examples)
-    random_selection[np.arange(n_examples), random_chain_indices] = 1.0
-    methods["random"] = random_selection
+    random_scores = np.random.uniform(0, 1, size=(n_examples, n_chains_count))
+    methods["random"] = random_scores
 
     # Majority vote baseline - percentage of correct chains per group
     majority_vote_scores = np.mean(labels, axis=1, keepdims=True)  # (num_examples, 1)
