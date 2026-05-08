@@ -166,7 +166,7 @@ def compute_ece(confidences: np.ndarray, labels: np.ndarray, n_bins: int = 10) -
     Returns:
         ECE score
     """
-    result = compute_calibration_error(confidences, labels, n_bins)
+    result = compute_calibration_error(confidences, labels, n_bins, strategy="quantile")
     return result["ece"]
 
 
