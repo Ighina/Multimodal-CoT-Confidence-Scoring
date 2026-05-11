@@ -24,10 +24,12 @@ from src.embeddings import (
 )
 from src.coherence import (
     InternalCoherenceMetric,
+    CandidatePoolInternalCoherenceMetric,
     CrossModalCoherenceMetric,
+    CandidatePoolCoherenceMetric,
     ChainConfidenceScorer,
-    NLICoherenceMetric,  # <-- Added
-    PRMCoherenceMetric,  # <-- Added
+    NLICoherenceMetric,
+    PRMCoherenceMetric,
 )
 from src.coherence_models import KDEDensityModel, GMMDensityModel
 
@@ -69,6 +71,57 @@ def convert_to_dict(chain):
         "steps": chain.steps,
         "log_probs": chain.log_probs,
     }
+
+
+def _has_valid_modal_embeddings(modal_embs) -> bool:
+    if modal_embs is None:
+        return False
+    if isinstance(modal_embs, torch.Tensor):
+        return True
+    if isinstance(modal_embs, dict):
+        return any(v is not None for v in modal_embs.values())
+    return False
+
+
+def _pool_scores_for_candidate(pool_results: Dict, i: int) -> Dict:
+    per_cand_keys = [
+        "absolute_entropy_gated",
+        "absolute_eb_penalised",
+        "contrastive_z_score",
+        "pool_eb_shrunk",
+        "pool_entropy_gated",
+        "composite_score",
+        "rank",
+    ]
+    result = {k: pool_results[k][i].item() for k in per_cand_keys}
+    result["pool_margin"] = pool_results["pool_margin"].item()
+    result["pool_mean_absolute"] = pool_results["pool_mean_absolute"].item()
+    result["pool_std_absolute"] = pool_results["pool_std_absolute"].item()
+    result["best_candidate_idx"] = int(pool_results["best_candidate_idx"].item())
+    return result
+
+
+def _internal_pool_scores_for_candidate(pool_results: Dict, i: int) -> Dict:
+    per_cand_keys = [
+        "absolute_smoothness",
+        "absolute_goal_directedness",
+        "absolute_semantic_density",
+        "absolute_composite",
+        "pool_eb_shrunk",
+        "contrastive_z_score",
+        "contrastive_z_smoothness",
+        "contrastive_z_goal",
+        "contrastive_z_density",
+        "per_candidate_margin",
+        "composite_score",
+        "rank",
+    ]
+    result = {k: pool_results[k][i].item() for k in per_cand_keys}
+    result["pool_margin"] = pool_results["pool_margin"].item()
+    result["pool_mean_composite"] = pool_results["pool_mean_composite"].item()
+    result["pool_std_composite"] = pool_results["pool_std_composite"].item()
+    result["best_candidate_idx"] = int(pool_results["best_candidate_idx"].item())
+    return result
 
 
 def setup_encoders(args, device: str, logger: logging.Logger):
@@ -352,6 +405,8 @@ def compute_coherence_scores(
     embeddings: List[List[Dict[str, torch.Tensor]]],
     confidence_scorer: ChainConfidenceScorer,
     logger: logging.Logger,
+    pool_metric: Optional[CandidatePoolCoherenceMetric] = None,
+    internal_pool_metric: Optional[CandidatePoolInternalCoherenceMetric] = None,
 ) -> List[List[Dict[str, float]]]:
     """Compute coherence scores for all samples and chains."""
     logger.info("Computing coherence scores...")
@@ -391,6 +446,34 @@ def compute_coherence_scores(
             scores_dict = convert_scores(scores)
             sample_scores.append(scores_dict)
 
+        if pool_metric is not None and len(sample_embeddings) > 1:
+            modal_embs = sample_embeddings[0]["modal_embeddings"]
+            if _has_valid_modal_embeddings(modal_embs):
+                pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
+                try:
+                    pool_results = pool_metric.score_pool(pool_step_embeds, modal_embs)
+                    for i, chain_scores in enumerate(sample_scores):
+                        chain_scores["pool_grounding"] = _pool_scores_for_candidate(
+                            pool_results, i
+                        )
+                except Exception as e:
+                    logger.warning(f"Sample {idx}: pool scoring failed: {e}")
+
+        if internal_pool_metric is not None and len(sample_embeddings) > 1:
+            pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
+            pool_answer_embeds = [e["answer_embedding"] for e in sample_embeddings]
+            pool_question_embeds = [e["question_embedding"] for e in sample_embeddings]
+            try:
+                pool_results = internal_pool_metric.score_pool(
+                    pool_step_embeds, pool_answer_embeds, pool_question_embeds
+                )
+                for i, chain_scores in enumerate(sample_scores):
+                    chain_scores["pool_coherence"] = (
+                        _internal_pool_scores_for_candidate(pool_results, i)
+                    )
+            except Exception as e:
+                logger.warning(f"Sample {idx}: internal pool scoring failed: {e}")
+
         all_scores.append(sample_scores)
 
     logger.info("Coherence scoring complete")
@@ -410,7 +493,9 @@ def process_sample_sequential(
     save_embeddings_dir: Optional[Path] = None,
     logger: Optional[logging.Logger] = None,
     encode_from_url: bool = True,
-    modal_embeddings: Optional[Path] = None
+    modal_embeddings: Optional[Path] = None,
+    pool_metric: Optional[CandidatePoolCoherenceMetric] = None,
+    internal_pool_metric: Optional[CandidatePoolInternalCoherenceMetric] = None,
 ) -> tuple[List[Dict[str, torch.Tensor]], List[Dict[str, float]]]:
 
     assert not (
@@ -426,127 +511,128 @@ def process_sample_sequential(
     sample_embeddings = []
 
     for chain in cot_chains:
-        
+
         if modal_embeddings is None:
-          if text_encoder != "clap" and text_encoder is not None:
-            step_embeddings = text_encoder.encode_cot_steps(
-                chain.steps, question=sample.question
-            )
-            question_embedding = text_encoder(sample.question)
-            answer_embedding = text_encoder(chain.final_answer)
-          elif text_encoder == "clap" and audio_encoder is not None:
-            step_embeddings = audio_encoder.encode_text_for_audio_alignment(chain.steps)
-            question_embedding = audio_encoder.encode_text_for_audio_alignment(
-                [sample.question]
-            )
-            answer_embedding = audio_encoder.encode_text_for_audio_alignment(
-                [chain.final_answer]
-            )
-          
-          modal_embeddings = {"image": None, "audio": None, "video": None}
-          existing_modalities = []
-
-          if sample.images and multimodal_encoder:
-            modal_embeddings["image"] = multimodal_encoder.encode_images(sample.images)
-            existing_modalities.append("image")
-
-          if sample.audio_paths and audio_encoder:
-            if text_encoder == "clap":
+            if text_encoder != "clap" and text_encoder is not None:
+                step_embeddings = text_encoder.encode_cot_steps(
+                    chain.steps, question=sample.question
+                )
+                question_embedding = text_encoder(sample.question)
+                answer_embedding = text_encoder(chain.final_answer)
+            elif text_encoder == "clap" and audio_encoder is not None:
                 step_embeddings = audio_encoder.encode_text_for_audio_alignment(
                     chain.steps
                 )
-            if encode_from_url:
-                audio_paths = (
-                    [
-                        UNO_BENCH_AUDIO_URL + Path(path).name
-                        for path in sample.audio_paths
-                    ]
-                    if sample.audio_paths
-                    else []
+                question_embedding = audio_encoder.encode_text_for_audio_alignment(
+                    [sample.question]
                 )
-                modal_embeddings["audio"] = audio_encoder.encode_audio(audio_paths)
-            else:
-                modal_embeddings["audio"] = audio_encoder.encode_audio_from_file(
-                    sample.audio_paths
+                answer_embedding = audio_encoder.encode_text_for_audio_alignment(
+                    [chain.final_answer]
                 )
-            existing_modalities.append("audio")
 
-          if sample.video_paths and multimodal_encoder:
-            if encode_from_url:
-                video_paths = (
-                    [
-                        UNO_BENCH_VIDEO_URL + Path(path).name
-                        for path in sample.video_paths
-                    ]
-                    if sample.video_paths
-                    else []
-                )
-                video_embeddings = multimodal_encoder.encode_videos(video_paths)
-            else:
-                video_embeddings = multimodal_encoder.encode_videos_from_file(
-                    sample.video_paths
-                )
-            modal_embeddings["video"] = video_embeddings
-            existing_modalities.append("video")
+            modal_embeddings = {"image": None, "audio": None, "video": None}
+            existing_modalities = []
 
-          if omnimodal_encoder:
-            question_embedding, answer_embedding, step_embeddings = omnimodal_encoder.encode_text(sample.question, chain.steps)
+            if sample.images and multimodal_encoder:
+                modal_embeddings["image"] = multimodal_encoder.encode_images(
+                    sample.images
+                )
+                existing_modalities.append("image")
+
+            if sample.audio_paths and audio_encoder:
+                if text_encoder == "clap":
+                    step_embeddings = audio_encoder.encode_text_for_audio_alignment(
+                        chain.steps
+                    )
+                if encode_from_url:
+                    audio_paths = (
+                        [
+                            UNO_BENCH_AUDIO_URL + Path(path).name
+                            for path in sample.audio_paths
+                        ]
+                        if sample.audio_paths
+                        else []
+                    )
+                    modal_embeddings["audio"] = audio_encoder.encode_audio(audio_paths)
+                else:
+                    modal_embeddings["audio"] = audio_encoder.encode_audio_from_file(
+                        sample.audio_paths
+                    )
+                existing_modalities.append("audio")
+
+            if sample.video_paths and multimodal_encoder:
+                if encode_from_url:
+                    video_paths = (
+                        [
+                            UNO_BENCH_VIDEO_URL + Path(path).name
+                            for path in sample.video_paths
+                        ]
+                        if sample.video_paths
+                        else []
+                    )
+                    video_embeddings = multimodal_encoder.encode_videos(video_paths)
+                else:
+                    video_embeddings = multimodal_encoder.encode_videos_from_file(
+                        sample.video_paths
+                    )
+                modal_embeddings["video"] = video_embeddings
+                existing_modalities.append("video")
+
+            if omnimodal_encoder:
+                question_embedding, answer_embedding, step_embeddings = (
+                    omnimodal_encoder.encode_text(sample.question, chain.steps)
+                )
+                question_embedding = question_embedding.to("cpu")
+                answer_embedding = answer_embedding.to("cpu")
+                step_embeddings = step_embeddings.to("cpu")
+
+                if encode_from_url:
+
+                    audio_paths = (
+                        [Path(path).name for path in sample.audio_paths]
+                        if sample.audio_paths
+                        else []
+                    )
+                    video_paths = (
+                        [Path(path).name for path in sample.video_paths]
+                        if sample.video_paths
+                        else []
+                    )
+                    image_paths = (
+                        [Path(path).name for path in sample.image_paths]
+                        if sample.image_paths
+                        else []
+                    )
+                else:
+                    raise NotImplementedError
+                    audio_paths = sample.audio_paths
+                    video_paths = sample.video_paths
+                    image_paths = sample.image_paths
+
+                modal_embeddings["omnimodal"] = omnimodal_encoder.encode(
+                    text=sample.question,
+                    audio_inputs=audio_paths,
+                    video_inputs=video_paths,
+                    image_inputs=image_paths,
+                )
+
+                existing_modalities.append("omnimodal")
+
+        else:
+            # We directly get the multimodal embeddings from the pre-computed file
+            assert (
+                omnimodal_encoder
+            ), "If using pre-computed modal embeddings you need to pass the same omnimodal encoder to compute the text embeddings!!!"
+
+            if not chain.steps:
+                chain.steps = ["ERROR"]
+
+            question_embedding, answer_embedding, step_embeddings = (
+                omnimodal_encoder.encode_text(sample.question, chain.steps)
+            )
             question_embedding = question_embedding.to("cpu")
             answer_embedding = answer_embedding.to("cpu")
             step_embeddings = step_embeddings.to("cpu")
-            
-            if encode_from_url:
-
-                audio_paths = (
-                    [
-                        Path(path).name
-                        for path in sample.audio_paths
-                    ]
-                    if sample.audio_paths
-                    else []
-                )
-                video_paths = (
-                    [
-                        Path(path).name
-                        for path in sample.video_paths
-                    ]
-                    if sample.video_paths
-                    else []
-                )
-                image_paths = (
-                    [
-                        Path(path).name
-                        for path in sample.image_paths
-                    ]
-                    if sample.image_paths
-                    else []
-                )
-            else:
-                raise NotImplementedError
-                audio_paths = sample.audio_paths
-                video_paths = sample.video_paths
-                image_paths = sample.image_paths
-
-            modal_embeddings["omnimodal"] = omnimodal_encoder.encode(
-                text=sample.question,
-                audio_inputs=audio_paths,
-                video_inputs=video_paths,
-                image_inputs=image_paths
-            )
-
-            existing_modalities.append("omnimodal")
-        
-        else:
-          # We directly get the multimodal embeddings from the pre-computed file
-          assert omnimodal_encoder, "If using pre-computed modal embeddings you need to pass the same omnimodal encoder to compute the text embeddings!!!"
-          
-          if not chain.steps:
-              chain.steps = ["ERROR"]
-
-          question_embedding, answer_embedding, step_embeddings = omnimodal_encoder.encode_text(sample.question, chain.steps)
-          question_embedding = question_embedding.to("cpu")
-          answer_embedding = answer_embedding.to("cpu")
-          step_embeddings = step_embeddings.to("cpu")
 
         # TODO: handle cases in which multimodal encoding fails
         # if modal_embeddings is None:
@@ -556,21 +642,27 @@ def process_sample_sequential(
         #         else (audio_encoder.get_embedding_dim() if audio_encoder else 512)
         #     )
         #     modal_embeddings = torch.zeros(embedding_dim).to("cpu")
-        
+
         if isinstance(modal_embeddings, dict):
             existing_modalities = list(modal_embeddings.keys())
-            if len(existing_modalities) == 1 and existing_modalities[0]=="omnimodal":
+            if len(existing_modalities) == 1 and existing_modalities[0] == "omnimodal":
                 try:
                     modal_embeddings = modal_embeddings[existing_modalities[0]].cpu()
                 except AttributeError:
-                    modal_embeddings = torch.tensor(modal_embeddings[existing_modalities[0]]).cpu()
+                    modal_embeddings = torch.tensor(
+                        modal_embeddings[existing_modalities[0]]
+                    ).cpu()
             else:
                 for modality in existing_modalities:
                     if modal_embeddings[modality] is not None:
                         try:
-                            modal_embeddings[modality] = modal_embeddings[modality].cpu()
+                            modal_embeddings[modality] = modal_embeddings[
+                                modality
+                            ].cpu()
                         except AttributeError:
-                            modal_embeddings[modality] = torch.tensor(modal_embeddings[modality]).cpu()
+                            modal_embeddings[modality] = torch.tensor(
+                                modal_embeddings[modality]
+                            ).cpu()
         # try:
         #     step_embeddings = step_embeddings.cpu()
         # except:
@@ -649,6 +741,38 @@ def process_sample_sequential(
 
         scores_dict = convert_scores(scores)
         sample_scores.append(scores_dict)
+
+    if pool_metric is not None and len(sample_embeddings) > 1:
+        modal_embs = sample_embeddings[0]["modal_embeddings"]
+        if _has_valid_modal_embeddings(modal_embs):
+            pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
+            try:
+                pool_results = pool_metric.score_pool(pool_step_embeds, modal_embs)
+                for i, chain_scores in enumerate(sample_scores):
+                    chain_scores["pool_grounding"] = _pool_scores_for_candidate(
+                        pool_results, i
+                    )
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Pool scoring failed for sample {sample_idx}: {e}")
+
+    if internal_pool_metric is not None and len(sample_embeddings) > 1:
+        pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
+        pool_answer_embeds = [e["answer_embedding"] for e in sample_embeddings]
+        pool_question_embeds = [e["question_embedding"] for e in sample_embeddings]
+        try:
+            pool_results = internal_pool_metric.score_pool(
+                pool_step_embeds, pool_answer_embeds, pool_question_embeds
+            )
+            for i, chain_scores in enumerate(sample_scores):
+                chain_scores["pool_coherence"] = (
+                    _internal_pool_scores_for_candidate(pool_results, i)
+                )
+        except Exception as e:
+            if logger:
+                logger.warning(
+                    f"Internal pool scoring failed for sample {sample_idx}: {e}"
+                )
 
     return sample_embeddings, sample_scores
 
@@ -856,9 +980,7 @@ def main():
     parser.add_argument("--num_chains", type=int, default=20)
     parser.add_argument("--num_chains_for_scoring", type=int, default=None)
     parser.add_argument("--max_new_tokens", type=int, default=None)
-    parser.add_argument(
-        "--text_encoder", type=str, default=None
-    )
+    parser.add_argument("--text_encoder", type=str, default=None)
     parser.add_argument("--multimodal_encoder", type=str, default=None)
     parser.add_argument("--audio_encoder", type=str, default=None)
     parser.add_argument("--omnimodal_encoder", type=str, default=None)
@@ -871,8 +993,8 @@ def main():
         "--modal_embeddings",
         type=str,
         default=None,
-        help="If included, this is the path to the pre-computed modal embeddings (still different from loading embeddings, as text embeddings are computed on the fly)"
-            )
+        help="If included, this is the path to the pre-computed modal embeddings (still different from loading embeddings, as text embeddings are computed on the fly)",
+    )
 
     # Coherence metric arguments (Embedding Base)
     parser.add_argument(
@@ -995,6 +1117,16 @@ def main():
     confidence_scorer = setup_confidence_scorer(
         args, internal_metric, cross_modal_metric, device, logger
     )
+    pool_metric = CandidatePoolCoherenceMetric(
+        similarity_metric=args.similarity_metric,
+        variance_penalty_weight=1.0,
+    )
+    internal_pool_metric = CandidatePoolInternalCoherenceMetric(
+        similarity_metric=args.similarity_metric,
+        aggregation=args.aggregation,
+        smoothness_weight=args.smoothness_weight,
+        goal_directedness_weight=args.goal_directedness_weight,
+    )
 
     embeddings = None
     scores = None
@@ -1033,7 +1165,9 @@ def main():
                     save_embeddings_dir=save_embeddings_dir,
                     logger=logger,
                     encode_from_url=args.encode_from_url,
-                    modal_embeddings=modal_embeddings_sample
+                    modal_embeddings=modal_embeddings_sample,
+                    pool_metric=pool_metric,
+                    internal_pool_metric=internal_pool_metric,
                 )
                 scores.append(sample_scores)
 
@@ -1125,6 +1259,45 @@ def main():
                             return obj
 
                     sample_scores.append(convert_scores(scores_result))
+
+                if pool_metric is not None and len(sample_embeddings) > 1:
+                    modal_embs = sample_embeddings[0]["modal_embeddings"]
+                    if _has_valid_modal_embeddings(modal_embs):
+                        pool_step_embeds = [
+                            e["step_embeddings"] for e in sample_embeddings
+                        ]
+                        try:
+                            pool_results = pool_metric.score_pool(
+                                pool_step_embeds, modal_embs
+                            )
+                            for i, chain_scores in enumerate(sample_scores):
+                                chain_scores["pool_grounding"] = (
+                                    _pool_scores_for_candidate(pool_results, i)
+                                )
+                        except Exception as e:
+                            logger.warning(f"Sample {idx}: pool scoring failed: {e}")
+
+                if internal_pool_metric is not None and len(sample_embeddings) > 1:
+                    pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
+                    pool_answer_embeds = [
+                        e["answer_embedding"] for e in sample_embeddings
+                    ]
+                    pool_question_embeds = [
+                        e["question_embedding"] for e in sample_embeddings
+                    ]
+                    try:
+                        pool_results = internal_pool_metric.score_pool(
+                            pool_step_embeds, pool_answer_embeds, pool_question_embeds
+                        )
+                        for i, chain_scores in enumerate(sample_scores):
+                            chain_scores["pool_coherence"] = (
+                                _internal_pool_scores_for_candidate(pool_results, i)
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Sample {idx}: internal pool scoring failed: {e}"
+                        )
+
                 scores.append(sample_scores)
         else:
             logger.error("Must extract embeddings or provide --load_embeddings")
@@ -1160,7 +1333,13 @@ def main():
             logger.error("Must extract embeddings or provide --load_embeddings path")
             return
 
-        scores = compute_coherence_scores(embeddings, confidence_scorer, logger)
+        scores = compute_coherence_scores(
+            embeddings,
+            confidence_scorer,
+            logger,
+            pool_metric=pool_metric,
+            internal_pool_metric=internal_pool_metric,
+        )
 
     logger.info("Saving results...")
     save_results(

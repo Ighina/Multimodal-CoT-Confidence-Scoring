@@ -188,6 +188,21 @@ def extract_score_arrays(
         "nli_goal": [],
         "confidence": [],
         "umpire": [],
+        # Cross-modal pool (pool_grounding)
+        "pool_grounding_composite": [],
+        "pool_grounding_contrastive_z": [],
+        "pool_grounding_eb_shrunk": [],
+        "pool_grounding_entropy_gated": [],
+        "pool_grounding_eb_penalised": [],
+        "pool_grounding_pool_entropy": [],
+        # Internal pool (pool_coherence)
+        "pool_coherence_composite": [],
+        "pool_coherence_contrastive_z": [],
+        "pool_coherence_eb_shrunk": [],
+        "pool_coherence_smoothness": [],
+        "pool_coherence_goal_directedness": [],
+        "pool_coherence_semantic_density": [],
+        "pool_coherence_absolute_composite": [],
     }
 
     for example_scores in scores_data:
@@ -271,6 +286,21 @@ def extract_score_arrays(
             example_dict["umpire"].append(
                 score_dict.get("baseline", {}).get("umpire", 0.0)
             )
+            pg = score_dict.get("pool_grounding", {}) or {}
+            example_dict["pool_grounding_composite"].append(pg.get("composite_score", 0.0))
+            example_dict["pool_grounding_contrastive_z"].append(pg.get("contrastive_z_score", 0.0))
+            example_dict["pool_grounding_eb_shrunk"].append(pg.get("pool_eb_shrunk", 0.0))
+            example_dict["pool_grounding_entropy_gated"].append(pg.get("absolute_entropy_gated", 0.0))
+            example_dict["pool_grounding_eb_penalised"].append(pg.get("absolute_eb_penalised", 0.0))
+            example_dict["pool_grounding_pool_entropy"].append(pg.get("pool_entropy_gated", 0.0))
+            pc = score_dict.get("pool_coherence", {}) or {}
+            example_dict["pool_coherence_composite"].append(pc.get("composite_score", 0.0))
+            example_dict["pool_coherence_contrastive_z"].append(pc.get("contrastive_z_score", 0.0))
+            example_dict["pool_coherence_eb_shrunk"].append(pc.get("pool_eb_shrunk", 0.0))
+            example_dict["pool_coherence_smoothness"].append(pc.get("absolute_smoothness", 0.0))
+            example_dict["pool_coherence_goal_directedness"].append(pc.get("absolute_goal_directedness", 0.0))
+            example_dict["pool_coherence_semantic_density"].append(pc.get("absolute_semantic_density", 0.0))
+            example_dict["pool_coherence_absolute_composite"].append(pc.get("absolute_composite", 0.0))
 
         # Pad if needed
         for key in example_dict:
@@ -426,6 +456,20 @@ def add_consensus_methods(
         "weighted_50_50",  # already in methods
         "mean_internal",  # already in methods
         "mean_cross_modal",  # already in methods
+        # Pool-level scores
+        "pool_grounding_composite",
+        "pool_grounding_contrastive_z",
+        "pool_grounding_eb_shrunk",
+        "pool_grounding_entropy_gated",
+        "pool_grounding_eb_penalised",
+        "pool_grounding_pool_entropy",
+        "pool_coherence_composite",
+        "pool_coherence_contrastive_z",
+        "pool_coherence_eb_shrunk",
+        "pool_coherence_smoothness",
+        "pool_coherence_goal_directedness",
+        "mean_pool",  # already in methods
+        "pool_x_internal_x_crossmodal",  # already in methods
     ]
 
     def _get(key: str) -> np.ndarray:
@@ -669,6 +713,39 @@ def create_aggregation_methods(
         ],
         axis=0,
     )
+
+    # ------------------------------------------------------------------
+    # Pool-level methods (contrastive, multi-candidate)
+    # ------------------------------------------------------------------
+    try:
+        methods["pool_grounding_composite"] = score_arrays["pool_grounding_composite"]
+        methods["pool_grounding_contrastive_z"] = score_arrays["pool_grounding_contrastive_z"]
+        methods["pool_grounding_eb_shrunk"] = score_arrays["pool_grounding_eb_shrunk"]
+        methods["pool_grounding_entropy_gated"] = score_arrays["pool_grounding_entropy_gated"]
+        methods["pool_grounding_eb_penalised"] = score_arrays["pool_grounding_eb_penalised"]
+        methods["pool_grounding_pool_entropy"] = score_arrays["pool_grounding_pool_entropy"]
+        methods["pool_coherence_composite"] = score_arrays["pool_coherence_composite"]
+        methods["pool_coherence_contrastive_z"] = score_arrays["pool_coherence_contrastive_z"]
+        methods["pool_coherence_eb_shrunk"] = score_arrays["pool_coherence_eb_shrunk"]
+        methods["pool_coherence_smoothness"] = score_arrays["pool_coherence_smoothness"]
+        methods["pool_coherence_goal_directedness"] = score_arrays["pool_coherence_goal_directedness"]
+        methods["pool_coherence_semantic_density"] = score_arrays["pool_coherence_semantic_density"]
+        methods["pool_coherence_absolute_composite"] = score_arrays["pool_coherence_absolute_composite"]
+        methods["mean_pool"] = np.mean(
+            [score_arrays["pool_grounding_composite"], score_arrays["pool_coherence_composite"]],
+            axis=0,
+        )
+        methods["pool_x_internal_x_crossmodal"] = np.mean(
+            [
+                score_arrays["pool_grounding_composite"],
+                score_arrays["pool_coherence_composite"],
+                score_arrays["internal_overall"],
+                score_arrays["cross_modal_alignment"],
+            ],
+            axis=0,
+        )
+    except KeyError:
+        pass
 
     # ------------------------------------------------------------------
     # Consensus-boosted methods (answer-agreement based)
