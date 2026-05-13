@@ -12,6 +12,8 @@ Key design decisions:
 - The composite ranking signal is a contrastive z-score over a weighted
   combination of the three InternalCoherenceMetric sub-scores, with an
   EB / James-Stein variance penalty applied across the pool dimension.
+- Optional answer-agreement signal: pairwise soft majority-vote over answer
+  embeddings interpolated into the composite score.
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -20,10 +22,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .answer_agreement_mixin import AnswerAgreementMixin
 from .internal_coherence import InternalCoherenceMetric
 
 
-class CandidatePoolInternalCoherenceMetric(nn.Module):
+class CandidatePoolInternalCoherenceMetric(AnswerAgreementMixin, nn.Module):
     """
     Rank a pool of candidate reasoning chains by internal coherence quality.
 
@@ -49,12 +52,19 @@ class CandidatePoolInternalCoherenceMetric(nn.Module):
        the pool distribution, giving each candidate a signed deviation from
        the pool average.
 
-    5. **Sub-score contrastive z-scores** — z-scores are also computed
+    5. **Answer agreement** (optional) — pairwise cosine similarity between
+       each candidate's answer embedding and every other candidate's, averaged
+       over the pool (self excluded).  This is a soft majority-vote signal:
+       candidates whose answer matches most others score higher.  EB-shrunk
+       and z-scored before mixing.
+
+    6. **Sub-score contrastive z-scores** — z-scores are also computed
        independently for each of the three sub-scores, so callers can inspect
        which dimension (smoothness / goal / density) drives a candidate's rank.
 
-    6. **Composite rank score** — weighted blend of the contrastive z-score
-       (relative signal) and the normalised absolute score (absolute signal).
+    7. **Composite rank score** — configurable weighted blend of the
+       contrastive z-score, the normalised absolute score, and (optionally)
+       the answer-agreement signal.
 
     Args:
         similarity_metric: Passed through to InternalCoherenceMetric.
@@ -65,6 +75,11 @@ class CandidatePoolInternalCoherenceMetric(nn.Module):
         variance_penalty_weight: λ for the EB variance penalty (pool axis).
         contrastive_weight: Weight of the contrastive z-score in the final rank.
         absolute_weight: Weight of the normalised absolute score in the final rank.
+        answer_agreement_weight: Weight of the answer-agreement signal in the
+            composite score.  Set to 0.0 (default) to disable entirely and
+            preserve the original two-term composite.  The three weights do not
+            need to sum to 1 — each component is independently normalised to
+            [0, 1] before weighting.
     """
 
     def __init__(
@@ -77,14 +92,17 @@ class CandidatePoolInternalCoherenceMetric(nn.Module):
         variance_penalty_weight: float = 1.0,
         contrastive_weight: float = 0.6,
         absolute_weight: float = 0.4,
+        answer_agreement_weight: float = 0.0,
     ):
         super().__init__()
+        self.similarity_metric = similarity_metric
         self.smoothness_weight = smoothness_weight
         self.goal_directedness_weight = goal_directedness_weight
         self.density_weight = density_weight
         self.variance_penalty_weight = variance_penalty_weight
         self.contrastive_weight = contrastive_weight
         self.absolute_weight = absolute_weight
+        self.answer_agreement_weight = answer_agreement_weight
 
         self._base_metric = InternalCoherenceMetric(
             similarity_metric=similarity_metric,
@@ -296,22 +314,37 @@ class CandidatePoolInternalCoherenceMetric(nn.Module):
         )
 
         # ----------------------------------------------------------------
-        # 5. Composite rank score
+        # 5. Answer agreement (soft majority vote)
         # ----------------------------------------------------------------
-        # Normalise absolute composite to [0, 1] within pool before mixing
+        if self.answer_agreement_weight > 0.0:
+            agreement_scores = self.compute_answer_agreement(pool_answer_embeddings)
+            agr_raw = agreement_scores["answer_agreement_raw"]  # (N,)
+            agr_eb = agreement_scores["answer_agreement_eb"]  # (N,)
+            agr_z = agreement_scores["answer_agreement_z"]  # (N,)
+            agr_normed = agreement_scores["answer_agreement_normed"]  # (N,)
+            agr_matrix = agreement_scores["answer_sim_matrix"]  # (N, N)
+        else:
+            _zero = torch.zeros(N, device=abs_composite.device)
+            agr_raw = agr_eb = agr_z = agr_normed = _zero
+            agr_matrix = torch.zeros(N, N, device=abs_composite.device)
+
+        # ----------------------------------------------------------------
+        # 6. Composite rank score
+        # ----------------------------------------------------------------
+        # Each component independently normalised to [0, 1] before weighting.
         c_min, c_max = abs_composite.min(), abs_composite.max()
         abs_normed = (abs_composite - c_min) / (c_max - c_min + 1e-6)  # (N,)
 
-        # Map z-scores to (0, 1) via sigmoid
-        contrastive_normed = torch.sigmoid(contrastive_z)  # (N,)
+        contrastive_normed = torch.sigmoid(contrastive_z)  # (N,) → (0, 1)
 
         composite_score = (
             self.contrastive_weight * contrastive_normed
             + self.absolute_weight * abs_normed
+            + self.answer_agreement_weight * agr_normed
         )  # (N,)
 
         # ----------------------------------------------------------------
-        # 6. Ranking
+        # 7. Ranking
         # ----------------------------------------------------------------
         order = torch.argsort(composite_score, descending=True)
         ranks = torch.zeros(N, dtype=torch.long)
@@ -332,9 +365,13 @@ class CandidatePoolInternalCoherenceMetric(nn.Module):
             "contrastive_z_goal": z_goal,
             "contrastive_z_density": z_density,
             "per_candidate_margin": per_candidate_margin,
+            "answer_agreement_raw": agr_raw,
+            "answer_agreement_eb": agr_eb,
+            "answer_agreement_z": agr_z,
             "composite_score": composite_score,
             "rank": ranks,
-            # Pool-level scalars
+            # Pool-level tensors / scalars
+            "answer_sim_matrix": agr_matrix,
             "pool_margin": pool_margin,
             "pool_mean_composite": abs_composite.mean(),
             "pool_std_composite": abs_composite.std(unbiased=False),
@@ -370,6 +407,9 @@ class CandidatePoolInternalCoherenceMetric(nn.Module):
             "contrastive_z_goal",
             "contrastive_z_density",
             "per_candidate_margin",
+            "answer_agreement_raw",
+            "answer_agreement_eb",
+            "answer_agreement_z",
             "composite_score",
             "rank",
         ]

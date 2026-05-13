@@ -11,6 +11,8 @@ Key design decisions:
   rest of the pool, not just scored in isolation.
 - Carries over: entropy-gated routing and EB / James-Stein variance penalisation
   from CrossModalCoherenceMetric.
+- Optional answer-agreement signal: pairwise soft majority-vote over answer
+  embeddings (last step of each chain) interpolated into the composite score.
 """
 
 from typing import Dict, List, Optional, Tuple, Union
@@ -19,10 +21,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .answer_agreement_mixin import AnswerAgreementMixin
 from .cross_modal_coherence import CrossModalCoherenceMetric
 
 
-class CandidatePoolCoherenceMetric(nn.Module):
+class CandidatePoolCoherenceMetric(AnswerAgreementMixin, nn.Module):
     """
     Rank a pool of candidate answer-step embeddings by cross-modal grounding quality.
 
@@ -41,11 +44,18 @@ class CandidatePoolCoherenceMetric(nn.Module):
        candidates that are *distinctively* better grounded, not just
        adequate in isolation.
 
-    3. **Pool margin score** – the gap between the best candidate and the
+    3. **Answer agreement** (optional) – pairwise cosine similarity between
+       each candidate's answer embedding (last reasoning step) and every other
+       candidate's answer embedding, averaged over the pool (self excluded).
+       This is a soft majority-vote signal: candidates whose answer matches
+       most others score higher.  EB-shrunk and z-scored before mixing.
+
+    4. **Pool margin score** – the gap between the best candidate and the
        mean of the rest.  Large margin ⟹ one candidate is clearly dominant.
 
-    4. **Composite rank score** – a weighted combination of the contrastive
-       z-score and the absolute EB-penalised alignment, used for final ranking.
+    5. **Composite rank score** – configurable weighted combination of the
+       contrastive z-score, the absolute EB-penalised alignment, and
+       (optionally) the answer-agreement signal.
 
     Args:
         similarity_metric: Passed through to CrossModalCoherenceMetric.
@@ -53,6 +63,11 @@ class CandidatePoolCoherenceMetric(nn.Module):
         variance_penalty_weight: λ for the EB variance penalty term.
         contrastive_weight: Weight of the relative z-score in the composite score.
         absolute_weight: Weight of the absolute EB score in the composite score.
+        answer_agreement_weight: Weight of the answer-agreement signal in the
+            composite score.  Set to 0.0 (default) to disable entirely and
+            preserve the original two-term composite.  The three weights do not
+            need to sum to 1 — each component is independently normalised to
+            [0, 1] before weighting.
     """
 
     def __init__(
@@ -62,6 +77,7 @@ class CandidatePoolCoherenceMetric(nn.Module):
         variance_penalty_weight: float = 1.0,
         contrastive_weight: float = 0.6,
         absolute_weight: float = 0.4,
+        answer_agreement_weight: float = 0.0,
     ):
         super().__init__()
         self.similarity_metric = similarity_metric
@@ -69,6 +85,7 @@ class CandidatePoolCoherenceMetric(nn.Module):
         self.variance_penalty_weight = variance_penalty_weight
         self.contrastive_weight = contrastive_weight
         self.absolute_weight = absolute_weight
+        self.answer_agreement_weight = answer_agreement_weight
 
         # Re-use the single-candidate scorer for absolute metrics
         self._base_metric = CrossModalCoherenceMetric(
@@ -224,6 +241,7 @@ class CandidatePoolCoherenceMetric(nn.Module):
         self,
         pool_step_embeddings: List[torch.Tensor],
         modal_embeddings: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        pool_answer_embeddings: Optional[List[torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Score and rank a pool of candidates against shared modal embeddings.
@@ -236,6 +254,10 @@ class CandidatePoolCoherenceMetric(nn.Module):
                 - ``(num_modals, embed_dim)`` tensor for a single modality, or
                 - ``Dict[str, Tensor]`` for omni-modal inputs.
                 This is the **same** object for every candidate.
+            pool_answer_embeddings: Optional list of length ``N``; explicit
+                answer embeddings for each candidate.  When omitted, the last
+                step embedding of each candidate is used as a proxy.  Only
+                consumed when ``answer_agreement_weight > 0``.
 
         Returns:
             A dictionary containing:
@@ -251,13 +273,23 @@ class CandidatePoolCoherenceMetric(nn.Module):
                     EB-shrunk score across the pool dimension.
                 ``pool_entropy_gated``
                     Pool-level entropy-gated routing score per candidate.
+                ``answer_agreement_raw``
+                    Self-excluded pairwise mean similarity (soft majority vote).
+                    Zero tensor when ``answer_agreement_weight == 0``.
+                ``answer_agreement_eb``
+                    EB-shrunk answer agreement scores.
+                ``answer_agreement_z``
+                    Z-score of EB-shrunk agreement scores.
                 ``composite_score``
-                    Weighted combination of contrastive z-score and absolute
-                    EB score — the primary ranking signal.
+                    Weighted combination of contrastive z-score, absolute EB
+                    score, and (optionally) answer-agreement signal.
                 ``rank``
                     Integer rank of each candidate (0 = best).
 
-            Pool-level scalars:
+            Pool-level tensors / scalars:
+                ``answer_sim_matrix``
+                    (N, N) pairwise answer similarity matrix (diagnostic).
+                    Zero matrix when ``answer_agreement_weight == 0``.
                 ``pool_margin``
                     Score gap between the best and mean of the rest.
                 ``pool_mean_absolute``
@@ -319,19 +351,46 @@ class CandidatePoolCoherenceMetric(nn.Module):
         )  # (N,)
 
         # ----------------------------------------------------------------
-        # 3. Composite score & ranking
+        # 3. Answer agreement (soft majority vote)
         # ----------------------------------------------------------------
-        # Normalise absolute EB scores to [0,1] range within pool before mixing
-        eb_min, eb_max = abs_eb_penalised_t.min(), abs_eb_penalised_t.max()
-        eb_range = eb_max - eb_min + 1e-6
-        abs_eb_normed = (abs_eb_penalised_t - eb_min) / eb_range  # (N,)
+        # Resolve answer embeddings: explicit arg takes priority; fall back to
+        # last step of each candidate chain as a proxy.
+        _answer_embs: List[torch.Tensor]
+        if pool_answer_embeddings is not None:
+            _answer_embs = pool_answer_embeddings
+        else:
+            _answer_embs = [steps[-1] for steps in pool_step_embeddings]
 
-        # Normalise z-scores to [0,1] (soft sigmoid-style)
-        contrastive_normed = torch.sigmoid(contrastive_z)  # (N,)
+        if self.answer_agreement_weight > 0.0:
+            agreement_scores = self.compute_answer_agreement(_answer_embs)
+            agr_raw = agreement_scores["answer_agreement_raw"]  # (N,)
+            agr_eb = agreement_scores["answer_agreement_eb"]  # (N,)
+            agr_z = agreement_scores["answer_agreement_z"]  # (N,)
+            agr_normed = agreement_scores["answer_agreement_normed"]  # (N,)
+            agr_matrix = agreement_scores["answer_sim_matrix"]  # (N, N)
+        else:
+            # Disabled — emit zero tensors so the output dict is always consistent
+            _zero = torch.zeros(num_candidates, device=abs_eb_penalised_t.device)
+            agr_raw = agr_eb = agr_z = agr_normed = _zero
+            agr_matrix = torch.zeros(
+                num_candidates, num_candidates, device=abs_eb_penalised_t.device
+            )
+
+        # ----------------------------------------------------------------
+        # 4. Composite score & ranking
+        # ----------------------------------------------------------------
+        # Each component is independently normalised to [0, 1] before weighting
+        # so the weights have a consistent interpretation regardless of scale.
+
+        eb_min, eb_max = abs_eb_penalised_t.min(), abs_eb_penalised_t.max()
+        abs_eb_normed = (abs_eb_penalised_t - eb_min) / (eb_max - eb_min + 1e-6)  # (N,)
+
+        contrastive_normed = torch.sigmoid(contrastive_z)  # (N,) → (0, 1)
 
         composite = (
             self.contrastive_weight * contrastive_normed
             + self.absolute_weight * abs_eb_normed
+            + self.answer_agreement_weight * agr_normed
         )  # (N,)
 
         # Ranks: argsort descending → position of each candidate
@@ -343,7 +402,7 @@ class CandidatePoolCoherenceMetric(nn.Module):
         best_idx = int(order[0].item())
 
         # ----------------------------------------------------------------
-        # 4. Pool-level summary statistics
+        # 5. Pool-level summary statistics
         # ----------------------------------------------------------------
         best_score = abs_eb_penalised_t[best_idx]
         rest_mask = torch.ones(num_candidates, dtype=torch.bool)
@@ -361,9 +420,13 @@ class CandidatePoolCoherenceMetric(nn.Module):
             "contrastive_z_score": contrastive_z,
             "pool_eb_shrunk": pool_eb_shrunk,
             "pool_entropy_gated": pool_entropy_gated,
+            "answer_agreement_raw": agr_raw,
+            "answer_agreement_eb": agr_eb,
+            "answer_agreement_z": agr_z,
             "composite_score": composite,
             "rank": ranks,
-            # Pool-level scalars
+            # Pool-level tensors / scalars
+            "answer_sim_matrix": agr_matrix,
             "pool_margin": pool_margin,
             "pool_mean_absolute": abs_eb_penalised_t.mean(),
             "pool_std_absolute": abs_eb_penalised_t.std(unbiased=False),
@@ -374,6 +437,7 @@ class CandidatePoolCoherenceMetric(nn.Module):
         self,
         pool_step_embeddings: List[torch.Tensor],
         modal_embeddings: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        pool_answer_embeddings: Optional[List[torch.Tensor]] = None,
     ) -> List[Tuple[int, Dict[str, torch.Tensor]]]:
         """
         Convenience wrapper: returns candidates sorted best-first.
@@ -384,7 +448,9 @@ class CandidatePoolCoherenceMetric(nn.Module):
             contains all scalar scores for that candidate extracted from the
             full ``score_pool`` output.
         """
-        results = self.score_pool(pool_step_embeddings, modal_embeddings)
+        results = self.score_pool(
+            pool_step_embeddings, modal_embeddings, pool_answer_embeddings
+        )
 
         # Build per-candidate score dicts
         scalar_keys = [
@@ -393,6 +459,9 @@ class CandidatePoolCoherenceMetric(nn.Module):
             "contrastive_z_score",
             "pool_eb_shrunk",
             "pool_entropy_gated",
+            "answer_agreement_raw",
+            "answer_agreement_eb",
+            "answer_agreement_z",
             "composite_score",
             "rank",
         ]
@@ -414,6 +483,9 @@ class CandidatePoolCoherenceMetric(nn.Module):
         self,
         pool_step_embeddings: List[torch.Tensor],
         modal_embeddings: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        pool_answer_embeddings: Optional[List[torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         """Alias for score_pool — makes the class usable as a standard nn.Module."""
-        return self.score_pool(pool_step_embeddings, modal_embeddings)
+        return self.score_pool(
+            pool_step_embeddings, modal_embeddings, pool_answer_embeddings
+        )
