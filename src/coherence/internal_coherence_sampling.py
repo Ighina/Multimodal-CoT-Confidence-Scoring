@@ -92,7 +92,7 @@ class CandidatePoolInternalCoherenceMetric(AnswerAgreementMixin, nn.Module):
         variance_penalty_weight: float = 1.0,
         contrastive_weight: float = 0.6,
         absolute_weight: float = 0.4,
-        answer_agreement_weight: float = 0.0,
+        answer_agreement_weight: float = 0.7,
     ):
         super().__init__()
         self.similarity_metric = similarity_metric
