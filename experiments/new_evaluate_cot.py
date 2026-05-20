@@ -201,6 +201,10 @@ def extract_score_arrays(
         "pool_grounding_entropy_gated": [],
         "pool_grounding_eb_penalised": [],
         "pool_grounding_pool_entropy": [],
+        # Cross-modal pool — answer agreement signals
+        "pool_grounding_answer_agreement_raw": [],
+        "pool_grounding_answer_agreement_eb": [],
+        "pool_grounding_answer_agreement_z": [],
         # Internal pool (pool_coherence)
         "pool_coherence_composite": [],
         "pool_coherence_contrastive_z": [],
@@ -209,6 +213,10 @@ def extract_score_arrays(
         "pool_coherence_goal_directedness": [],
         "pool_coherence_semantic_density": [],
         "pool_coherence_absolute_composite": [],
+        # Internal pool — answer agreement signals
+        "pool_coherence_answer_agreement_raw": [],
+        "pool_coherence_answer_agreement_eb": [],
+        "pool_coherence_answer_agreement_z": [],
     }
 
     for example_scores in scores_data:
@@ -256,13 +264,17 @@ def extract_score_arrays(
                 score_dict.get("cross_modal", {}).get("eb_variance_penalised", 0.0)
             )
             example_dict["cross_modal_optimal_transport"].append(
-                score_dict.get("cross_modal", {}).get("optimal_transport_alignment", 0.0)
+                score_dict.get("cross_modal", {}).get(
+                    "optimal_transport_alignment", 0.0
+                )
             )
             example_dict["cross_modal_ot_eb_variance_penalised"].append(
                 score_dict.get("cross_modal", {}).get("ot_eb_variance_penalised", 0.0)
             )
             example_dict["cross_modal_entropy_no_temperature"].append(
-                score_dict.get("cross_modal", {}).get("entropy_no_temperature_alignment", 0.0)
+                score_dict.get("cross_modal", {}).get(
+                    "entropy_no_temperature_alignment", 0.0
+                )
             )
             example_dict["cross_modal_entropy_gated_routing"].append(
                 score_dict.get("cross_modal", {}).get("entropy_gated_routing", 0.0)
@@ -308,21 +320,75 @@ def extract_score_arrays(
             example_dict["baseline_inverse_length"].append(
                 baseline.get("inverse_length", 0.0)
             )
+
+            # ----------------------------------------------------------------
+            # Pool-grounding scores
+            # ----------------------------------------------------------------
             pg = score_dict.get("pool_grounding", {}) or {}
-            example_dict["pool_grounding_composite"].append(pg.get("composite_score", 0.0))
-            example_dict["pool_grounding_contrastive_z"].append(pg.get("contrastive_z_score", 0.0))
-            example_dict["pool_grounding_eb_shrunk"].append(pg.get("pool_eb_shrunk", 0.0))
-            example_dict["pool_grounding_entropy_gated"].append(pg.get("absolute_entropy_gated", 0.0))
-            example_dict["pool_grounding_eb_penalised"].append(pg.get("absolute_eb_penalised", 0.0))
-            example_dict["pool_grounding_pool_entropy"].append(pg.get("pool_entropy_gated", 0.0))
+            example_dict["pool_grounding_composite"].append(
+                pg.get("composite_score", 0.0)
+            )
+            example_dict["pool_grounding_contrastive_z"].append(
+                pg.get("contrastive_z_score", 0.0)
+            )
+            example_dict["pool_grounding_eb_shrunk"].append(
+                pg.get("pool_eb_shrunk", 0.0)
+            )
+            example_dict["pool_grounding_entropy_gated"].append(
+                pg.get("absolute_entropy_gated", 0.0)
+            )
+            example_dict["pool_grounding_eb_penalised"].append(
+                pg.get("absolute_eb_penalised", 0.0)
+            )
+            example_dict["pool_grounding_pool_entropy"].append(
+                pg.get("pool_entropy_gated", 0.0)
+            )
+            # Answer-agreement signals emitted by CandidatePoolCoherenceMetric
+            example_dict["pool_grounding_answer_agreement_raw"].append(
+                pg.get("answer_agreement_raw", 0.0)
+            )
+            example_dict["pool_grounding_answer_agreement_eb"].append(
+                pg.get("answer_agreement_eb", 0.0)
+            )
+            example_dict["pool_grounding_answer_agreement_z"].append(
+                pg.get("answer_agreement_z", 0.0)
+            )
+
+            # ----------------------------------------------------------------
+            # Pool-coherence scores
+            # ----------------------------------------------------------------
             pc = score_dict.get("pool_coherence", {}) or {}
-            example_dict["pool_coherence_composite"].append(pc.get("composite_score", 0.0))
-            example_dict["pool_coherence_contrastive_z"].append(pc.get("contrastive_z_score", 0.0))
-            example_dict["pool_coherence_eb_shrunk"].append(pc.get("pool_eb_shrunk", 0.0))
-            example_dict["pool_coherence_smoothness"].append(pc.get("absolute_smoothness", 0.0))
-            example_dict["pool_coherence_goal_directedness"].append(pc.get("absolute_goal_directedness", 0.0))
-            example_dict["pool_coherence_semantic_density"].append(pc.get("absolute_semantic_density", 0.0))
-            example_dict["pool_coherence_absolute_composite"].append(pc.get("absolute_composite", 0.0))
+            example_dict["pool_coherence_composite"].append(
+                pc.get("composite_score", 0.0)
+            )
+            example_dict["pool_coherence_contrastive_z"].append(
+                pc.get("contrastive_z_score", 0.0)
+            )
+            example_dict["pool_coherence_eb_shrunk"].append(
+                pc.get("pool_eb_shrunk", 0.0)
+            )
+            example_dict["pool_coherence_smoothness"].append(
+                pc.get("absolute_smoothness", 0.0)
+            )
+            example_dict["pool_coherence_goal_directedness"].append(
+                pc.get("absolute_goal_directedness", 0.0)
+            )
+            example_dict["pool_coherence_semantic_density"].append(
+                pc.get("absolute_semantic_density", 0.0)
+            )
+            example_dict["pool_coherence_absolute_composite"].append(
+                pc.get("absolute_composite", 0.0)
+            )
+            # Answer-agreement signals emitted by CandidatePoolInternalCoherenceMetric
+            example_dict["pool_coherence_answer_agreement_raw"].append(
+                pc.get("answer_agreement_raw", 0.0)
+            )
+            example_dict["pool_coherence_answer_agreement_eb"].append(
+                pc.get("answer_agreement_eb", 0.0)
+            )
+            example_dict["pool_coherence_answer_agreement_z"].append(
+                pc.get("answer_agreement_z", 0.0)
+            )
 
         # Pad if needed
         for key in example_dict:
@@ -474,24 +540,31 @@ def add_consensus_methods(
         "cross_modal_entropy_gated_routing",
         "umpire",
         "umpire_normalized",
-        "mean_all",  # already in methods
-        "weighted_50_50",  # already in methods
-        "mean_internal",  # already in methods
-        "mean_cross_modal",  # already in methods
-        # Pool-level scores
+        "mean_all",
+        "weighted_50_50",
+        "mean_internal",
+        "mean_cross_modal",
+        # Pool-level scores — now included since answer-agreement makes
+        # these competitive alongside the token-frequency baseline
         "pool_grounding_composite",
         "pool_grounding_contrastive_z",
         "pool_grounding_eb_shrunk",
         "pool_grounding_entropy_gated",
         "pool_grounding_eb_penalised",
         "pool_grounding_pool_entropy",
+        "pool_grounding_answer_agreement_raw",
+        "pool_grounding_answer_agreement_eb",
         "pool_coherence_composite",
         "pool_coherence_contrastive_z",
         "pool_coherence_eb_shrunk",
-        "pool_coherence_smoothness",
-        "pool_coherence_goal_directedness",
-        "mean_pool",  # already in methods
-        "pool_x_internal_x_crossmodal",  # already in methods
+        "pool_coherence_answer_agreement_raw",
+        "pool_coherence_answer_agreement_eb",
+        "mean_pool",
+        "pool_x_internal_x_crossmodal",
+        # Fused agreement methods
+        "pool_grounding_agreement_x_composite",
+        "pool_coherence_agreement_x_composite",
+        "mean_pool_agreement",
     ]
 
     def _get(key: str) -> np.ndarray:
@@ -513,9 +586,6 @@ def add_consensus_methods(
         methods[f"{key}_x_consensus_hard"] = base * plurality_float
 
         # 3. Majority-vote quality: consensus fraction × normalised base score
-        #    (majority_vote already in methods as a label-dependent baseline;
-        #     this variant uses the answer-agreement fraction instead so it
-        #     is label-free and usable at inference time)
         methods[f"majority_vote_x_{key}"] = consensus_mult * base
 
     # 4. Aggregate consensus signals across all base scores
@@ -757,24 +827,134 @@ def create_aggregation_methods(
     # ------------------------------------------------------------------
     try:
         methods["pool_grounding_composite"] = score_arrays["pool_grounding_composite"]
-        methods["pool_grounding_contrastive_z"] = score_arrays["pool_grounding_contrastive_z"]
+        methods["pool_grounding_contrastive_z"] = score_arrays[
+            "pool_grounding_contrastive_z"
+        ]
         methods["pool_grounding_eb_shrunk"] = score_arrays["pool_grounding_eb_shrunk"]
-        methods["pool_grounding_entropy_gated"] = score_arrays["pool_grounding_entropy_gated"]
-        methods["pool_grounding_eb_penalised"] = score_arrays["pool_grounding_eb_penalised"]
-        methods["pool_grounding_pool_entropy"] = score_arrays["pool_grounding_pool_entropy"]
+        methods["pool_grounding_entropy_gated"] = score_arrays[
+            "pool_grounding_entropy_gated"
+        ]
+        methods["pool_grounding_eb_penalised"] = score_arrays[
+            "pool_grounding_eb_penalised"
+        ]
+        methods["pool_grounding_pool_entropy"] = score_arrays[
+            "pool_grounding_pool_entropy"
+        ]
         methods["pool_coherence_composite"] = score_arrays["pool_coherence_composite"]
-        methods["pool_coherence_contrastive_z"] = score_arrays["pool_coherence_contrastive_z"]
+        methods["pool_coherence_contrastive_z"] = score_arrays[
+            "pool_coherence_contrastive_z"
+        ]
         methods["pool_coherence_eb_shrunk"] = score_arrays["pool_coherence_eb_shrunk"]
         methods["pool_coherence_smoothness"] = score_arrays["pool_coherence_smoothness"]
-        methods["pool_coherence_goal_directedness"] = score_arrays["pool_coherence_goal_directedness"]
-        methods["pool_coherence_semantic_density"] = score_arrays["pool_coherence_semantic_density"]
-        methods["pool_coherence_absolute_composite"] = score_arrays["pool_coherence_absolute_composite"]
+        methods["pool_coherence_goal_directedness"] = score_arrays[
+            "pool_coherence_goal_directedness"
+        ]
+        methods["pool_coherence_semantic_density"] = score_arrays[
+            "pool_coherence_semantic_density"
+        ]
+        methods["pool_coherence_absolute_composite"] = score_arrays[
+            "pool_coherence_absolute_composite"
+        ]
         methods["mean_pool"] = np.mean(
-            [score_arrays["pool_grounding_composite"], score_arrays["pool_coherence_composite"]],
+            [
+                score_arrays["pool_grounding_composite"],
+                score_arrays["pool_coherence_composite"],
+            ],
             axis=0,
         )
         methods["pool_x_internal_x_crossmodal"] = np.mean(
             [
+                score_arrays["pool_grounding_composite"],
+                score_arrays["pool_coherence_composite"],
+                score_arrays["internal_overall"],
+                score_arrays["cross_modal_alignment"],
+            ],
+            axis=0,
+        )
+    except KeyError:
+        pass
+
+    # ------------------------------------------------------------------
+    # Pool answer-agreement methods
+    # These use the pairwise answer-embedding similarity scores emitted
+    # by CandidatePoolCoherenceMetric / CandidatePoolInternalCoherenceMetric
+    # when answer_agreement_weight > 0.
+    # ------------------------------------------------------------------
+    try:
+        # Raw pairwise agreement scores (soft majority vote in embedding space)
+        methods["pool_grounding_answer_agreement_raw"] = score_arrays[
+            "pool_grounding_answer_agreement_raw"
+        ]
+        methods["pool_grounding_answer_agreement_eb"] = score_arrays[
+            "pool_grounding_answer_agreement_eb"
+        ]
+        methods["pool_grounding_answer_agreement_z"] = score_arrays[
+            "pool_grounding_answer_agreement_z"
+        ]
+        methods["pool_coherence_answer_agreement_raw"] = score_arrays[
+            "pool_coherence_answer_agreement_raw"
+        ]
+        methods["pool_coherence_answer_agreement_eb"] = score_arrays[
+            "pool_coherence_answer_agreement_eb"
+        ]
+        methods["pool_coherence_answer_agreement_z"] = score_arrays[
+            "pool_coherence_answer_agreement_z"
+        ]
+
+        # Agreement × composite: rewards chains that are both highly grounded
+        # *and* agree with the pool majority — the core hypothesis from the
+        # observation that answer agreement outperforms coherence metrics alone.
+        methods["pool_grounding_agreement_x_composite"] = (
+            score_arrays["pool_grounding_answer_agreement_eb"]
+            * score_arrays["pool_grounding_composite"]
+        )
+        methods["pool_coherence_agreement_x_composite"] = (
+            score_arrays["pool_coherence_answer_agreement_eb"]
+            * score_arrays["pool_coherence_composite"]
+        )
+
+        # Three-way mean: grounding agreement + coherence agreement + composite
+        # Blends the majority-vote signal from both pool metrics with their
+        # composite quality scores in a single balanced aggregate.
+        methods["mean_pool_agreement"] = np.mean(
+            [
+                score_arrays["pool_grounding_answer_agreement_eb"],
+                score_arrays["pool_coherence_answer_agreement_eb"],
+                score_arrays["pool_grounding_composite"],
+                score_arrays["pool_coherence_composite"],
+            ],
+            axis=0,
+        )
+
+        # Agreement-only mean across both pool metrics (label-free majority vote
+        # expressed purely in answer-embedding space, without any coherence signal).
+        # Useful as a direct ablation against the token-frequency majority_vote.
+        methods["pool_answer_agreement_mean"] = np.mean(
+            [
+                score_arrays["pool_grounding_answer_agreement_eb"],
+                score_arrays["pool_coherence_answer_agreement_eb"],
+            ],
+            axis=0,
+        )
+
+        # EB z-score fusion: uses the z-normalised agreement (which is on the
+        # same scale as contrastive_z) for a cleaner linear combination.
+        methods["pool_grounding_agreement_z_x_composite"] = (
+            score_arrays["pool_grounding_answer_agreement_z"]
+            * score_arrays["pool_grounding_composite"]
+        )
+        methods["pool_coherence_agreement_z_x_composite"] = (
+            score_arrays["pool_coherence_answer_agreement_z"]
+            * score_arrays["pool_coherence_composite"]
+        )
+
+        # Full fusion: agreement (eb) + composite + internal + cross-modal
+        # Tests whether the agreement signal complements the existing metrics
+        # beyond what mean_pool_x_internal_x_crossmodal already captures.
+        methods["pool_agreement_x_internal_x_crossmodal"] = np.mean(
+            [
+                score_arrays["pool_grounding_answer_agreement_eb"],
+                score_arrays["pool_coherence_answer_agreement_eb"],
                 score_arrays["pool_grounding_composite"],
                 score_arrays["pool_coherence_composite"],
                 score_arrays["internal_overall"],
@@ -825,6 +1005,89 @@ def normalize_confidences(confidences: np.ndarray) -> np.ndarray:
     return (confidences - min_val) / (max_val - min_val)
 
 
+def calibrate_scores_cv(
+    confidence_methods: Dict[str, np.ndarray],
+    labels: np.ndarray,
+    n_folds: int = 5,
+    calibrator_type: str = "logistic",
+    seed: int = 42,
+) -> Dict[str, np.ndarray]:
+    """
+    Calibrate each method's raw scores into probabilities via k-fold CV.
+
+    The dataset is split at the *example* level so chains from the same example
+    never appear in both train and test.  For each fold, a shallow calibrator is
+    fit on the (score, label) pairs of the training examples (chains flattened)
+    and applied to the held-out test examples.  Calibrated probabilities are
+    assembled fold-by-fold so every example appears in exactly one test set.
+
+    Supported calibrator_type values:
+      "logistic"  — Platt scaling (L2-regularised logistic regression, C=1)
+      "isotonic"  — Isotonic regression (sklearn IsotonicRegression)
+
+    Args:
+        confidence_methods: Dict mapping method name -> array (n_examples, n_chains).
+        labels:             Binary correctness array (n_examples, n_chains).
+        n_folds:            Number of CV folds.
+        calibrator_type:    Calibration model ("logistic" or "isotonic").
+        seed:               Random seed for fold splitting.
+
+    Returns:
+        Dict with the same keys as confidence_methods; each value is a
+        (n_examples, n_chains) float array of calibrated probabilities.
+    """
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.isotonic import IsotonicRegression
+    from sklearn.model_selection import KFold
+
+    n_examples, n_chains = labels.shape
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+
+    calibrated: Dict[str, np.ndarray] = {
+        name: np.zeros((n_examples, n_chains), dtype=float)
+        for name in confidence_methods
+    }
+
+    for train_idx, test_idx in kf.split(np.arange(n_examples)):
+        train_labels = labels[train_idx].flatten()
+        unique_classes = np.unique(train_labels)
+
+        for name, scores in confidence_methods.items():
+            train_scores = scores[train_idx].flatten()
+            test_scores = scores[test_idx].flatten()
+
+            # If training labels are all one class the calibrator can't learn;
+            # fall back to min-max normalised raw scores.
+            if len(unique_classes) < 2:
+                lo, hi = train_scores.min(), train_scores.max()
+                span = hi - lo if hi - lo > 1e-8 else 1.0
+                cal_probs = (test_scores - lo) / span
+                cal_probs = np.clip(cal_probs, 0.0, 1.0)
+                calibrated[name][test_idx] = cal_probs.reshape(len(test_idx), n_chains)
+                continue
+
+            try:
+                if calibrator_type == "isotonic":
+                    clf = IsotonicRegression(out_of_bounds="clip")
+                    clf.fit(train_scores, train_labels)
+                    cal_probs = clf.predict(test_scores).astype(float)
+                else:  # "logistic" (default / Platt scaling)
+                    clf = LogisticRegression(
+                        C=1.0, solver="lbfgs", max_iter=1000, random_state=seed
+                    )
+                    clf.fit(train_scores.reshape(-1, 1), train_labels)
+                    cal_probs = clf.predict_proba(test_scores.reshape(-1, 1))[:, 1]
+            except Exception:
+                # Fallback: normalise raw scores to [0, 1]
+                lo, hi = train_scores.min(), train_scores.max()
+                span = hi - lo if hi - lo > 1e-8 else 1.0
+                cal_probs = np.clip((test_scores - lo) / span, 0.0, 1.0)
+
+            calibrated[name][test_idx] = cal_probs.reshape(len(test_idx), n_chains)
+
+    return calibrated
+
+
 def build_subset_index(cots_data: List, original_data) -> Dict[str, List[int]]:
     """
     Build a mapping from subset name to list of indices (positions) in cots_data.
@@ -863,7 +1126,10 @@ def run_single_evaluation(
     seed: int = None,
     use_max_confidence: bool = False,
     allowed_methods: Optional[List[str]] = None,
-    global_max_available = None
+    global_max_available=None,
+    calibrate: bool = False,
+    calibration_folds: int = 5,
+    calibration_type: str = "logistic",
 ) -> Tuple[Dict, Dict]:
     """
     Run a single evaluation iteration.
@@ -877,6 +1143,10 @@ def run_single_evaluation(
         seed: Random seed for reproducibility
         use_max_confidence: If True, evaluate using only the highest-confidence
             chain per example instead of flattening all chains.
+        calibrate: If True, apply cross-validated calibration to each method's
+            scores before evaluation.
+        calibration_folds: Number of CV folds used when calibrate=True.
+        calibration_type: Calibrator type ("logistic" or "isotonic").
 
     Returns:
         Tuple of (method_results, comparison)
@@ -885,16 +1155,17 @@ def run_single_evaluation(
     if shuffle:
         if seed is not None:
             np.random.seed(seed)
-        
+
         # Always use the GLOBAL max_available, not the local one
-        pool_size = global_max_available if global_max_available is not None \
-                    else max(len(example) for example in cots_data)
-        
+        pool_size = (
+            global_max_available
+            if global_max_available is not None
+            else max(len(example) for example in cots_data)
+        )
+
         # Use sampling WITH replacement (Bootstrapping)
         random_indices = np.random.choice(
-            pool_size, 
-            size=n_chains, 
-            replace=True
+            pool_size, size=n_chains, replace=True
         ).tolist()
 
     labels = extract_labels(cots_data, n_chains, indices=random_indices)
@@ -907,13 +1178,24 @@ def run_single_evaluation(
 
     if allowed_methods is not None:
         confidence_methods = {
-            name: conf 
-            for name, conf in confidence_methods.items() 
+            name: conf
+            for name, conf in confidence_methods.items()
             if name in allowed_methods
         }
-        
+
         if not confidence_methods:
-            raise ValueError("None of the specified --methods matched the generated methods.")
+            raise ValueError(
+                "None of the specified --methods matched the generated methods."
+            )
+
+    if calibrate:
+        confidence_methods = calibrate_scores_cv(
+            confidence_methods,
+            labels,
+            n_folds=calibration_folds,
+            calibrator_type=calibration_type,
+            seed=seed if seed is not None else 42,
+        )
 
     if normalize:
         confidence_methods = {
@@ -1005,7 +1287,13 @@ def aggregate_multiple_results(
 
     aggregated = {}
     for method_name in all_method_names:
-        metrics = {"in_group_accuracy": [], "auc_roc": [], "auc_pr": [], "auc_arc": [], "ece": []}
+        metrics = {
+            "in_group_accuracy": [],
+            "auc_roc": [],
+            "auc_pr": [],
+            "auc_arc": [],
+            "ece": [],
+        }
 
         for results in all_results:
             if method_name in results:
@@ -1038,7 +1326,13 @@ def aggregate_multiple_results(
                     "n_iterations": n,
                 }
 
-    ranking_keys = ["in_group_accuracy_ranking", "auc_roc_ranking", "auc_pr_ranking", "auc_arc_ranking", "ece_ranking"]
+    ranking_keys = [
+        "in_group_accuracy_ranking",
+        "auc_roc_ranking",
+        "auc_pr_ranking",
+        "auc_arc_ranking",
+        "ece_ranking",
+    ]
     aggregated_rankings = {}
 
     for ranking_key in ranking_keys:
@@ -1088,26 +1382,14 @@ def run_evaluation_for_split(
     label: str,
     use_max_confidence: bool = False,
     allowed_methods: Optional[List[str]] = None,
-    global_max_available = None
+    global_max_available=None,
+    calibrate: bool = False,
+    calibration_folds: int = 5,
+    calibration_type: str = "logistic",
 ) -> Dict:
     """
     Run evaluation (single or multiple experiments) for a given data split and
     return a result dict in the same structure used by the overall evaluation.
-
-    Args:
-        cots_data: Filtered list of per-example chain lists for this split
-        scores_data: Filtered list of per-example score lists for this split
-        n_chains: Number of chains per example
-        normalize: Whether to normalize confidence scores
-        shuffle: Whether to shuffle chains
-        multiple_experiments: Whether to run multiple iterations
-        multiple_iterations: Number of iterations when multiple_experiments is True
-        label: Human-readable name for this split (used in log messages)
-        use_max_confidence: If True, evaluate using only the highest-confidence
-            chain per example instead of flattening all chains.
-
-    Returns:
-        Dict with keys "method_results", "comparison", and optionally "aggregation"
     """
     if multiple_experiments:
         all_results = []
@@ -1122,8 +1404,11 @@ def run_evaluation_for_split(
                 shuffle=shuffle,
                 seed=i,
                 use_max_confidence=use_max_confidence,
-                allowed_methods = allowed_methods,
-                global_max_available = global_max_available
+                allowed_methods=allowed_methods,
+                global_max_available=global_max_available,
+                calibrate=calibrate,
+                calibration_folds=calibration_folds,
+                calibration_type=calibration_type,
             )
             all_results.append(method_results)
             all_comparisons.append(comparison)
@@ -1147,7 +1432,10 @@ def run_evaluation_for_split(
             shuffle=shuffle,
             seed=42,
             use_max_confidence=use_max_confidence,
-            global_max_available = global_max_available
+            global_max_available=global_max_available,
+            calibrate=calibrate,
+            calibration_folds=calibration_folds,
+            calibration_type=calibration_type,
         )
         return {
             "method_results": method_results,
@@ -1191,7 +1479,6 @@ def print_split_summary(split_result: Dict, label: str, multiple_experiments: bo
                 f"(95% CI [{metrics['ci_95_lower']:.4f}, {metrics['ci_95_upper']:.4f}])"
             )
 
-        # Add this to print the statistical significance of the top methods
         if "statistical_tests" in agg:
             print("\n  Statistical Significance (Top Methods):")
             for metric, tests in agg["statistical_tests"].items():
@@ -1199,9 +1486,8 @@ def print_split_summary(split_result: Dict, label: str, multiple_experiments: bo
                     continue
                 print(f"    {metric}:")
                 for test_name, test_data in tests.items():
-                    # Using Wilcoxon as the default non-parametric test to display
-                    is_sig = test_data['wilcoxon_test']['significant_at_0.05']
-                    p_val = test_data['wilcoxon_test']['p_value']
+                    is_sig = test_data["wilcoxon_test"]["significant_at_0.05"]
+                    p_val = test_data["wilcoxon_test"]["p_value"]
                     print(f"      - {test_name}: Significant? {is_sig} (p={p_val:.4f})")
     else:
         method_results = split_result["method_results"]
@@ -1226,9 +1512,6 @@ def _method_rows(
     """
     Convert a method_results dict (and optional aggregation) into a list of row dicts
     suitable for csv.DictWriter.
-
-    Single-run columns : method, n_examples, in_group_accuracy, auc_roc, ece
-    Multi-run columns  : + _mean, _std, _ci_95_lower, _ci_95_upper for each metric
     """
     rows = []
     for method, res in method_results.items():
@@ -1257,7 +1540,6 @@ def _method_rows(
 
         rows.append(row)
 
-    # Sort by in_group_accuracy descending (use mean when available)
     sort_key = (
         "in_group_accuracy_mean"
         if multiple_experiments and aggregation
@@ -1272,12 +1554,7 @@ def save_overall_csv(
     overall_result: Dict,
     multiple_experiments: bool,
 ) -> None:
-    """
-    Write one CSV where every row is a method and columns are evaluation metrics
-    for the full dataset.
-
-    File is placed next to --output_file with suffix _overall.csv.
-    """
+    """Write one CSV where every row is a method — full dataset metrics."""
     csv_path = output_path.with_name(output_path.stem + "_overall.csv")
 
     aggregation = overall_result.get("aggregation")
@@ -1303,12 +1580,7 @@ def save_subsets_csv(
     subset_results: Dict[str, Dict],
     multiple_experiments: bool,
 ) -> None:
-    """
-    Write one CSV where every row is a (subset, method) pair and columns are
-    evaluation metrics.  An extra leading column "subset_name" identifies the split.
-
-    File is placed next to --output_file with suffix _subsets.csv.
-    """
+    """Write one CSV where every row is a (subset, method) pair."""
     csv_path = output_path.with_name(output_path.stem + "_subsets.csv")
 
     all_rows = []
@@ -1346,13 +1618,7 @@ def _build_plot_data(
     lower_is_better: bool,
     top_n: int,
 ) -> Tuple[List[str], List[float], Optional[np.ndarray]]:
-    """
-    Extract sorted method names, values, and optional asymmetric CI error bars.
-
-    Returns:
-        (methods, values, xerr)  where xerr has shape (2, n) [lower_err, upper_err]
-        or None when no CI data is available (single-run mode).
-    """
+    """Extract sorted method names, values, and optional asymmetric CI error bars."""
     if multiple_experiments and "aggregation" in split_result:
         agg = split_result["aggregation"]["aggregated_metrics"]
         entries = []
@@ -1392,15 +1658,10 @@ def plot_results(
     output_path: Path,
     top_n: int = 20,
 ) -> None:
-    """
-    Create horizontal bar charts comparing methods for each split.
-
-    One PNG is saved per split (OVERALL + each subset).  Each figure contains
-    five subplots — one per metric.  When multiple_experiments is True, 95 % CI
-    error bars are drawn for each bar.
-    """
+    """Create horizontal bar charts comparing methods for each split."""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -1419,9 +1680,7 @@ def plot_results(
     splits = {"OVERALL": overall_result, **subset_results}
 
     for split_name, split_result in splits.items():
-        safe_name = (
-            split_name.replace("/", "_").replace(" ", "_").replace(":", "")
-        )
+        safe_name = split_name.replace("/", "_").replace(" ", "_").replace(":", "")
         n_examples = split_result.get("n_examples", "?")
 
         fig_height = max(6, top_n * 0.45 + 2)
@@ -1446,13 +1705,16 @@ def plot_results(
 
             if not methods:
                 ax.text(
-                    0.5, 0.5, "No data", ha="center", va="center",
+                    0.5,
+                    0.5,
+                    "No data",
+                    ha="center",
+                    va="center",
                     transform=ax.transAxes,
                 )
                 ax.set_title(title, fontsize=10, fontweight="bold")
                 continue
 
-            # Reverse so the best method appears at the top of the chart
             methods = methods[::-1]
             values = values[::-1]
             if xerr is not None:
@@ -1463,8 +1725,11 @@ def plot_results(
 
             if xerr is not None:
                 ax.barh(
-                    y_pos, values, xerr=xerr,
-                    color=color, alpha=0.75,
+                    y_pos,
+                    values,
+                    xerr=xerr,
+                    color=color,
+                    alpha=0.75,
                     error_kw={"ecolor": "dimgray", "capsize": 3, "linewidth": 1},
                 )
             else:
@@ -1476,16 +1741,13 @@ def plot_results(
             ax.set_xlabel("Value", fontsize=9)
             ax.margins(x=0.18)
 
-            # Inline value labels
             x_max = ax.get_xlim()[1]
             nudge = x_max * 0.01
             for i, v in enumerate(values):
                 ax.text(v + nudge, i, f"{v:.4f}", va="center", fontsize=6.5)
 
         plt.tight_layout()
-        plot_path = output_path.with_name(
-            output_path.stem + f"_plot_{safe_name}.png"
-        )
+        plot_path = output_path.with_name(output_path.stem + f"_plot_{safe_name}.png")
         plt.savefig(plot_path, bbox_inches="tight", dpi=150)
         plt.close(fig)
         print(f"  Plot saved to: {plot_path}")
@@ -1497,7 +1759,7 @@ def _get_metric_value(
     method: str,
     metric: str,
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """Return (mean, ci_lower, ci_upper) for a method/metric; (None, None, None) if missing."""
+    """Return (mean, ci_lower, ci_upper) for a method/metric."""
     if multiple_experiments and "aggregation" in split_result:
         agg = split_result["aggregation"]["aggregated_metrics"]
         if method in agg and metric in agg[method]:
@@ -1550,15 +1812,10 @@ def plot_multi_n_results(
     top_n: int = 10,
     selected_methods: Optional[List[str]] = None,
 ) -> None:
-    """
-    Create one line-plot figure per split (OVERALL + each subset).
-
-    Each figure has five subplots (one per metric).  Each line represents one
-    method across the evaluated n values.  When multiple_experiments is True,
-    a shaded band shows the 95 % CI around the line.
-    """
+    """Create one line-plot figure per split across evaluated n values."""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.cm import get_cmap
@@ -1594,9 +1851,7 @@ def plot_multi_n_results(
     ci_note = "  (shaded = 95 % CI)" if multiple_experiments else ""
 
     for split_label, subset_key in splits:
-        safe_name = (
-            split_label.replace("/", "_").replace(" ", "_").replace(":", "")
-        )
+        safe_name = split_label.replace("/", "_").replace(" ", "_").replace(":", "")
 
         fig, axes = plt.subplots(1, n_metrics, figsize=(n_metrics * 5, 5))
         if n_metrics == 1:
@@ -1664,113 +1919,41 @@ def main():
     parser = argparse.ArgumentParser(
         description="Evaluate CoT results with different confidence aggregation methods"
     )
+    parser.add_argument("--cots_path", type=str, required=True)
+    parser.add_argument("--scores_path", type=str, required=True)
+    parser.add_argument("--n_chains", type=int, default=None)
+    parser.add_argument("--n_chains_list", nargs="+", type=int, default=None)
+    parser.add_argument("--experiment_name", type=str, default=None)
+    parser.add_argument("--output_file", type=str, required=True)
+    parser.add_argument("--normalize", action="store_true")
+    parser.add_argument("--shuffle", action="store_true")
+    parser.add_argument("--multiple_experiments", action="store_true")
+    parser.add_argument("--multiple_iterations", type=int, default=1000)
+    parser.add_argument("--use_max_confidence", action="store_true")
+    parser.add_argument("--methods", nargs="+", type=str, default=None)
+    parser.add_argument("--plot", action="store_true")
+    parser.add_argument("--plot_top_n", type=int, default=20)
     parser.add_argument(
-        "--cots_path",
-        type=str,
-        required=True,
-        help="Path to the CoTs JSON file (List of List of dictionaries)",
+        "--calibrate",
+        action="store_true",
+        help="Calibrate each method's scores via k-fold cross-validation before evaluation.",
     )
     parser.add_argument(
-        "--scores_path", type=str, required=True, help="Path to the scores JSON file"
-    )
-    parser.add_argument(
-        "--n_chains",
+        "--calibration_folds",
         type=int,
-        default=None,
-        help="Number of chains to analyze per example (mutually exclusive with --n_chains_list)",
+        default=5,
+        help="Number of CV folds when --calibrate is enabled (default: 5).",
     )
     parser.add_argument(
-        "--n_chains_list",
-        nargs="+",
-        type=int,
-        default=None,
-        help=(
-            "List of n values to sweep (e.g. --n_chains_list 3 5 10). "
-            "Requires --experiment_name. Results go into per-n subfolders inside "
-            "<output_file parent>/<experiment_name>/n_<k>/. "
-            "Mutually exclusive with --n_chains."
-        ),
-    )
-    parser.add_argument(
-        "--experiment_name",
+        "--calibration_type",
         type=str,
-        default=None,
-        help="Name for the experiment folder (required with --n_chains_list).",
-    )
-    parser.add_argument(
-        "--output_file",
-        type=str,
-        required=True,
-        help="Path to save the final JSON results (single-n) or the filename template (multi-n).",
-    )
-    parser.add_argument(
-        "--normalize",
-        action="store_true",
-        help="Normalize confidence scores to [0, 1] range",
-    )
-    parser.add_argument(
-        "--shuffle",
-        action="store_true",
-        help="Randomly select N chains using random indices instead of taking the first N",
-    )
-    parser.add_argument(
-        "--multiple_experiments",
-        action="store_true",
-        help="Run multiple experiments (requires --shuffle) to create confidence intervals",
-    )
-    parser.add_argument(
-        "--multiple_iterations",
-        type=int,
-        default=1000,
-        help="Number of iterations when --multiple_experiments is used (default: 1000)",
-    )
-    parser.add_argument(
-        "--use_max_confidence",
-        action="store_true",
-        help=(
-            "Evaluate using only the highest-confidence chain per example "
-            "(simulates real-world single-answer selection). "
-            "When set, metrics are computed over one prediction per example "
-            "instead of flattening all chains."
-        ),
-    )
-    parser.add_argument(
-        "--methods",
-        nargs="+",
-        type=str,
-        default=None,
-        help=(
-            "Optional list of specific method names to evaluate. "
-            "If omitted, evaluates all methods. "
-            "In multi-n mode these are also the only methods shown in line plots."
-        ),
-    )
-    parser.add_argument(
-        "--plot",
-        action="store_true",
-        help=(
-            "Generate plots after evaluation. "
-            "Single-n: horizontal bar charts per split. "
-            "Multi-n: bar charts per (n, split) plus one line plot per split "
-            "showing metric vs n with optional CI shading."
-        ),
-    )
-    parser.add_argument(
-        "--plot_top_n",
-        type=int,
-        default=20,
-        help=(
-            "Max methods shown per metric in bar charts (default: 20). "
-            "In multi-n line plots, controls how many methods are drawn when "
-            "--methods is not specified."
-        ),
+        default="logistic",
+        choices=["logistic", "isotonic"],
+        help="Calibrator type: 'logistic' (Platt scaling) or 'isotonic' (default: logistic).",
     )
 
     args = parser.parse_args()
 
-    # ------------------------------------------------------------------ #
-    # Argument validation                                                  #
-    # ------------------------------------------------------------------ #
     if args.multiple_experiments and not args.shuffle:
         parser.error("--multiple_experiments requires --shuffle to be enabled")
     if args.n_chains is None and args.n_chains_list is None:
@@ -1780,9 +1963,6 @@ def main():
     if args.n_chains_list is not None and args.experiment_name is None:
         parser.error("--n_chains_list requires --experiment_name.")
 
-    # ------------------------------------------------------------------ #
-    # Load data (shared by both evaluation modes)                         #
-    # ------------------------------------------------------------------ #
     print(f"Loading CoTs from: {args.cots_path}")
     cots_data = load_json(args.cots_path)
 
@@ -1838,6 +2018,9 @@ def main():
                 use_max_confidence=args.use_max_confidence,
                 allowed_methods=args.methods,
                 global_max_available=global_max_available,
+                calibrate=args.calibrate,
+                calibration_folds=args.calibration_folds,
+                calibration_type=args.calibration_type,
             )
             print_split_summary(
                 results[subset_name],
@@ -1864,6 +2047,9 @@ def main():
                     args.multiple_iterations if args.multiple_experiments else 1
                 ),
                 "use_max_confidence": args.use_max_confidence,
+                "calibrate": args.calibrate,
+                "calibration_folds": args.calibration_folds if args.calibrate else None,
+                "calibration_type": args.calibration_type if args.calibrate else None,
             },
         }
         if "aggregation" in overall_result:
@@ -1905,6 +2091,9 @@ def main():
                 use_max_confidence=args.use_max_confidence,
                 allowed_methods=args.methods,
                 global_max_available=global_max_available,
+                calibrate=args.calibrate,
+                calibration_folds=args.calibration_folds,
+                calibration_type=args.calibration_type,
             )
             print_split_summary(n_overall, "OVERALL", args.multiple_experiments)
 
@@ -1913,16 +2102,13 @@ def main():
             all_n_overall[n] = n_overall
             all_n_subsets[n] = n_subsets
 
-            # Save JSON
             with open(n_output_path, "w") as f:
                 json.dump(_assemble_output(n, n_overall, n_subsets), f, indent=2)
             print(f"  Results saved to: {n_output_path}")
 
-            # CSV tables
             save_overall_csv(n_output_path, n_overall, args.multiple_experiments)
             save_subsets_csv(n_output_path, n_subsets, args.multiple_experiments)
 
-            # Per-n bar charts
             if args.plot:
                 print(f"  Generating bar charts for n_chains={n}...")
                 plot_results(
@@ -1933,7 +2119,6 @@ def main():
                     top_n=args.plot_top_n,
                 )
 
-        # Line plots across all n values
         if args.plot:
             print("\nGenerating multi-n line plots...")
             plot_multi_n_results(
@@ -1968,6 +2153,9 @@ def main():
         label="OVERALL",
         use_max_confidence=args.use_max_confidence,
         allowed_methods=args.methods,
+        calibrate=args.calibrate,
+        calibration_folds=args.calibration_folds,
+        calibration_type=args.calibration_type,
     )
     print_split_summary(
         overall_result, label="OVERALL", multiple_experiments=args.multiple_experiments
