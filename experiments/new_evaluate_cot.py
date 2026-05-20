@@ -188,6 +188,12 @@ def extract_score_arrays(
         "nli_goal": [],
         "confidence": [],
         "umpire": [],
+        # Additional per-chain baselines
+        "baseline_self_assessed_consistency": [],
+        "baseline_pure_consistency": [],
+        "baseline_correctness_vote": [],
+        "baseline_self_assessed": [],
+        "baseline_inverse_length": [],
         # Cross-modal pool (pool_grounding)
         "pool_grounding_composite": [],
         "pool_grounding_contrastive_z": [],
@@ -285,6 +291,22 @@ def extract_score_arrays(
             example_dict["confidence"].append(score_dict.get("confidence", 0.0))
             example_dict["umpire"].append(
                 score_dict.get("baseline", {}).get("umpire", 0.0)
+            )
+            baseline = score_dict.get("baseline", {}) or {}
+            example_dict["baseline_self_assessed_consistency"].append(
+                baseline.get("self_assessed-consistency", 0.0)
+            )
+            example_dict["baseline_pure_consistency"].append(
+                baseline.get("pure-consistency", 0.0)
+            )
+            example_dict["baseline_correctness_vote"].append(
+                baseline.get("correctness_vote", 0.0)
+            )
+            example_dict["baseline_self_assessed"].append(
+                baseline.get("self_assessed", 0.0)
+            )
+            example_dict["baseline_inverse_length"].append(
+                baseline.get("inverse_length", 0.0)
             )
             pg = score_dict.get("pool_grounding", {}) or {}
             example_dict["pool_grounding_composite"].append(pg.get("composite_score", 0.0))
@@ -686,6 +708,22 @@ def create_aggregation_methods(
     # Umpire baseline score
     methods["umpire"] = score_arrays["umpire"]
     methods["umpire_normalized"] = normalize_confidences(score_arrays["umpire"])
+
+    # Additional per-chain baselines (passed through from the score file's
+    # `baseline` block).  Exposed both as raw values and normalised to [0, 1]
+    # so they line up with the other methods on the same scale.
+    for raw_key, method_name in [
+        ("baseline_self_assessed_consistency", "self_assessed_consistency"),
+        ("baseline_pure_consistency", "pure_consistency"),
+        ("baseline_correctness_vote", "correctness_vote_baseline"),
+        ("baseline_self_assessed", "self_assessed"),
+        ("baseline_inverse_length", "inverse_length"),
+    ]:
+        if raw_key in score_arrays:
+            methods[method_name] = score_arrays[raw_key]
+            methods[f"{method_name}_normalized"] = normalize_confidences(
+                score_arrays[raw_key]
+            )
 
     # NLI individual scores
     methods["nli_overall"] = score_arrays["nli_overall"]
