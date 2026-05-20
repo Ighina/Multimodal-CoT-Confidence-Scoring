@@ -1005,21 +1005,23 @@ def normalize_confidences(confidences: np.ndarray) -> np.ndarray:
     return (confidences - min_val) / (max_val - min_val)
 
 
-def calibrate_scores_cv(
+def calibrate_scores_holdout(
     confidence_methods: Dict[str, np.ndarray],
     labels: np.ndarray,
-    n_folds: int = 5,
+    holdout_frac: float = 0.3,
     calibrator_type: str = "logistic",
     seed: int = 42,
-) -> Dict[str, np.ndarray]:
+) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray]:
     """
-    Calibrate each method's raw scores into probabilities via k-fold CV.
+    Calibrate each method's raw scores using a single example-level holdout split.
 
-    The dataset is split at the *example* level so chains from the same example
-    never appear in both train and test.  For each fold, a shallow calibrator is
-    fit on the (score, label) pairs of the training examples (chains flattened)
-    and applied to the held-out test examples.  Calibrated probabilities are
-    assembled fold-by-fold so every example appears in exactly one test set.
+    A fixed fraction of examples is reserved as the calibration set.  One
+    calibrator is fit per method on the (score, label) pairs of that set and
+    applied to the remaining evaluation examples.  Because every evaluation
+    point is mapped through the *same* calibration curve, the global ranking
+    induced by the raw scores is preserved up to a monotonic transform — so
+    AUC-ROC / AUC-PR / AUC-ARC are unaffected (modulo ties), and ECE measures
+    the actual calibration quality without per-fold scale artefacts.
 
     Supported calibrator_type values:
       "logistic"  — Platt scaling (L2-regularised logistic regression, C=1)
@@ -1028,64 +1030,65 @@ def calibrate_scores_cv(
     Args:
         confidence_methods: Dict mapping method name -> array (n_examples, n_chains).
         labels:             Binary correctness array (n_examples, n_chains).
-        n_folds:            Number of CV folds.
+        holdout_frac:       Fraction of examples reserved for fitting the calibrator.
         calibrator_type:    Calibration model ("logistic" or "isotonic").
-        seed:               Random seed for fold splitting.
+        seed:               Random seed for the calibration / evaluation split.
 
     Returns:
-        Dict with the same keys as confidence_methods; each value is a
-        (n_examples, n_chains) float array of calibrated probabilities.
+        Tuple of:
+          - calibrated:  Dict[name -> (n_eval, n_chains)] calibrated probabilities,
+                         restricted to the evaluation split.
+          - eval_labels: (n_eval, n_chains) labels for the evaluation examples.
+          - eval_idx:    Indices of the evaluation examples in the original arrays.
     """
     from sklearn.linear_model import LogisticRegression
     from sklearn.isotonic import IsotonicRegression
-    from sklearn.model_selection import KFold
 
     n_examples, n_chains = labels.shape
-    kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n_examples)
 
-    calibrated: Dict[str, np.ndarray] = {
-        name: np.zeros((n_examples, n_chains), dtype=float)
-        for name in confidence_methods
-    }
+    cal_size = int(round(holdout_frac * n_examples))
+    # Need at least 2 examples on each side for a meaningful fit / evaluation
+    cal_size = max(2, min(n_examples - 2, cal_size))
+    cal_idx = perm[:cal_size]
+    eval_idx = perm[cal_size:]
 
-    for train_idx, test_idx in kf.split(np.arange(n_examples)):
-        train_labels = labels[train_idx].flatten()
-        unique_classes = np.unique(train_labels)
+    cal_labels_flat = labels[cal_idx].flatten()
+    eval_labels = labels[eval_idx]
+    unique_classes = np.unique(cal_labels_flat)
 
-        for name, scores in confidence_methods.items():
-            train_scores = scores[train_idx].flatten()
-            test_scores = scores[test_idx].flatten()
+    calibrated: Dict[str, np.ndarray] = {}
+    for name, scores in confidence_methods.items():
+        cal_scores = scores[cal_idx].flatten()
+        eval_scores = scores[eval_idx].flatten()
 
-            # If training labels are all one class the calibrator can't learn;
-            # fall back to min-max normalised raw scores.
-            if len(unique_classes) < 2:
-                lo, hi = train_scores.min(), train_scores.max()
-                span = hi - lo if hi - lo > 1e-8 else 1.0
-                cal_probs = (test_scores - lo) / span
-                cal_probs = np.clip(cal_probs, 0.0, 1.0)
-                calibrated[name][test_idx] = cal_probs.reshape(len(test_idx), n_chains)
-                continue
-
+        # If calibration labels are all one class the calibrator can't learn;
+        # fall back to min-max normalised raw scores.
+        if len(unique_classes) < 2:
+            lo, hi = cal_scores.min(), cal_scores.max()
+            span = hi - lo if hi - lo > 1e-8 else 1.0
+            cal_probs = np.clip((eval_scores - lo) / span, 0.0, 1.0)
+        else:
             try:
                 if calibrator_type == "isotonic":
                     clf = IsotonicRegression(out_of_bounds="clip")
-                    clf.fit(train_scores, train_labels)
-                    cal_probs = clf.predict(test_scores).astype(float)
+                    clf.fit(cal_scores, cal_labels_flat)
+                    cal_probs = clf.predict(eval_scores).astype(float)
                 else:  # "logistic" (default / Platt scaling)
                     clf = LogisticRegression(
                         C=1.0, solver="lbfgs", max_iter=1000, random_state=seed
                     )
-                    clf.fit(train_scores.reshape(-1, 1), train_labels)
-                    cal_probs = clf.predict_proba(test_scores.reshape(-1, 1))[:, 1]
+                    clf.fit(cal_scores.reshape(-1, 1), cal_labels_flat)
+                    cal_probs = clf.predict_proba(eval_scores.reshape(-1, 1))[:, 1]
             except Exception:
-                # Fallback: normalise raw scores to [0, 1]
-                lo, hi = train_scores.min(), train_scores.max()
+                lo, hi = cal_scores.min(), cal_scores.max()
                 span = hi - lo if hi - lo > 1e-8 else 1.0
-                cal_probs = np.clip((test_scores - lo) / span, 0.0, 1.0)
+                cal_probs = np.clip((eval_scores - lo) / span, 0.0, 1.0)
 
-            calibrated[name][test_idx] = cal_probs.reshape(len(test_idx), n_chains)
+        calibrated[name] = cal_probs.reshape(len(eval_idx), n_chains)
 
-    return calibrated
+    return calibrated, eval_labels, eval_idx
 
 
 def build_subset_index(cots_data: List, original_data) -> Dict[str, List[int]]:
@@ -1128,7 +1131,7 @@ def run_single_evaluation(
     allowed_methods: Optional[List[str]] = None,
     global_max_available=None,
     calibrate: bool = False,
-    calibration_folds: int = 5,
+    calibration_holdout: float = 0.3,
     calibration_type: str = "logistic",
 ) -> Tuple[Dict, Dict]:
     """
@@ -1143,9 +1146,10 @@ def run_single_evaluation(
         seed: Random seed for reproducibility
         use_max_confidence: If True, evaluate using only the highest-confidence
             chain per example instead of flattening all chains.
-        calibrate: If True, apply cross-validated calibration to each method's
-            scores before evaluation.
-        calibration_folds: Number of CV folds used when calibrate=True.
+        calibrate: If True, fit a single calibrator per method on a holdout
+            split and evaluate only on the remaining examples.
+        calibration_holdout: Fraction of examples used as the calibration set
+            when calibrate=True.
         calibration_type: Calibrator type ("logistic" or "isotonic").
 
     Returns:
@@ -1189,10 +1193,10 @@ def run_single_evaluation(
             )
 
     if calibrate:
-        confidence_methods = calibrate_scores_cv(
+        confidence_methods, labels, _ = calibrate_scores_holdout(
             confidence_methods,
             labels,
-            n_folds=calibration_folds,
+            holdout_frac=calibration_holdout,
             calibrator_type=calibration_type,
             seed=seed if seed is not None else 42,
         )
@@ -1384,7 +1388,7 @@ def run_evaluation_for_split(
     allowed_methods: Optional[List[str]] = None,
     global_max_available=None,
     calibrate: bool = False,
-    calibration_folds: int = 5,
+    calibration_holdout: float = 0.3,
     calibration_type: str = "logistic",
 ) -> Dict:
     """
@@ -1407,7 +1411,7 @@ def run_evaluation_for_split(
                 allowed_methods=allowed_methods,
                 global_max_available=global_max_available,
                 calibrate=calibrate,
-                calibration_folds=calibration_folds,
+                calibration_holdout=calibration_holdout,
                 calibration_type=calibration_type,
             )
             all_results.append(method_results)
@@ -1434,7 +1438,7 @@ def run_evaluation_for_split(
             use_max_confidence=use_max_confidence,
             global_max_available=global_max_available,
             calibrate=calibrate,
-            calibration_folds=calibration_folds,
+            calibration_holdout=calibration_holdout,
             calibration_type=calibration_type,
         )
         return {
@@ -1939,10 +1943,15 @@ def main():
         help="Calibrate each method's scores via k-fold cross-validation before evaluation.",
     )
     parser.add_argument(
-        "--calibration_folds",
-        type=int,
-        default=5,
-        help="Number of CV folds when --calibrate is enabled (default: 5).",
+        "--calibration_holdout",
+        type=float,
+        default=0.3,
+        help=(
+            "Fraction of examples held out to fit the calibrator when "
+            "--calibrate is enabled (default: 0.3). Metrics are reported on "
+            "the remaining 1 - holdout fraction so the calibration curve is "
+            "consistent across all evaluation points."
+        ),
     )
     parser.add_argument(
         "--calibration_type",
@@ -2019,7 +2028,7 @@ def main():
                 allowed_methods=args.methods,
                 global_max_available=global_max_available,
                 calibrate=args.calibrate,
-                calibration_folds=args.calibration_folds,
+                calibration_holdout=args.calibration_holdout,
                 calibration_type=args.calibration_type,
             )
             print_split_summary(
@@ -2048,7 +2057,9 @@ def main():
                 ),
                 "use_max_confidence": args.use_max_confidence,
                 "calibrate": args.calibrate,
-                "calibration_folds": args.calibration_folds if args.calibrate else None,
+                "calibration_holdout": (
+                    args.calibration_holdout if args.calibrate else None
+                ),
                 "calibration_type": args.calibration_type if args.calibrate else None,
             },
         }
@@ -2092,7 +2103,7 @@ def main():
                 allowed_methods=args.methods,
                 global_max_available=global_max_available,
                 calibrate=args.calibrate,
-                calibration_folds=args.calibration_folds,
+                calibration_holdout=args.calibration_holdout,
                 calibration_type=args.calibration_type,
             )
             print_split_summary(n_overall, "OVERALL", args.multiple_experiments)
@@ -2154,7 +2165,7 @@ def main():
         use_max_confidence=args.use_max_confidence,
         allowed_methods=args.methods,
         calibrate=args.calibrate,
-        calibration_folds=args.calibration_folds,
+        calibration_holdout=args.calibration_holdout,
         calibration_type=args.calibration_type,
     )
     print_split_summary(
