@@ -132,10 +132,22 @@ def setup_encoders(args, device: str, logger: logging.Logger):
         omnimodal_encoder = OmnimodalEncoder(
             model_name=args.omnimodal_encoder, device=device
         )
-        text_encoder = None
         multimodal_encoder = None
         audio_encoder = None
         logger.info(f"Omnimodal encoder loaded: {args.omnimodal_encoder}")
+
+        # Optional: load a separate TextEncoder used ONLY for InternalCoherenceMetric
+        # step embeddings, while the omnimodal encoder still drives modal/cross-modal
+        # scoring. Skip when the user passed the same model name for both
+        # (degenerate case — omnimodal already handles text in that scenario).
+        if args.text_encoder and args.text_encoder != args.omnimodal_encoder:
+            text_encoder = TextEncoder(model_name=args.text_encoder, device=device)
+            logger.info(
+                "Text encoder loaded for internal coherence step embeddings: "
+                f"{args.text_encoder}"
+            )
+        else:
+            text_encoder = None
     elif (
         args.text_encoder == args.multimodal_encoder == args.audio_encoder
         and args.text_encoder is not None
@@ -249,11 +261,21 @@ def extract_embeddings(
     Now includes string metadata needed for NLI and PRM.
     """
     assert not (
-        omnimodal_encoder and (text_encoder or multimodal_encoder or audio_encoder)
-    ), "Cannot use omnimodal encoder together with separate text/multimodal/audio encoders"
+        omnimodal_encoder and (multimodal_encoder or audio_encoder)
+    ), "Cannot use omnimodal encoder together with separate multimodal/audio encoders"
     assert (omnimodal_encoder is not None) or (
         text_encoder is not None
     ), "At least one encoder must be provided"
+
+    # When both an omnimodal_encoder and a (non-CLAP) TextEncoder are passed,
+    # the TextEncoder is used ONLY to recompute step/question/answer embeddings
+    # for InternalCoherenceMetric. The omnimodal encoder still produces the
+    # primary step/modal embeddings used for cross-modal scoring.
+    use_text_for_internal = (
+        omnimodal_encoder is not None
+        and text_encoder is not None
+        and text_encoder != "clap"
+    )
 
     logger.info("Extracting embeddings...")
     all_embeddings = []
@@ -265,7 +287,11 @@ def extract_embeddings(
         sample_embeddings = []
 
         for chain in chains:
-            if text_encoder != "clap" and text_encoder is not None:
+            if (
+                text_encoder != "clap"
+                and text_encoder is not None
+                and not use_text_for_internal
+            ):
                 step_embeddings = text_encoder.encode_cot_steps(
                     chain.steps, question=sample.question
                 )
@@ -393,6 +419,22 @@ def extract_embeddings(
                 "text_final_answer": chain.final_answer,
             }
 
+            if use_text_for_internal:
+                internal_step_embeddings = text_encoder.encode_cot_steps(
+                    chain.steps, question=sample.question
+                )
+                internal_question_embedding = text_encoder(sample.question)
+                internal_answer_embedding = text_encoder(chain.final_answer)
+                chain_embedding_data["internal_step_embeddings"] = (
+                    internal_step_embeddings.cpu()
+                )
+                chain_embedding_data["internal_question_embedding"] = (
+                    internal_question_embedding.cpu()
+                )
+                chain_embedding_data["internal_answer_embedding"] = (
+                    internal_answer_embedding.cpu()
+                )
+
             sample_embeddings.append(chain_embedding_data)
 
         all_embeddings.append(sample_embeddings)
@@ -428,6 +470,11 @@ def compute_coherence_scores(
                 text_steps=chain_emb.get("text_steps"),
                 text_query=chain_emb.get("text_query"),
                 text_final_answer=chain_emb.get("text_final_answer"),
+                internal_step_embeddings=chain_emb.get("internal_step_embeddings"),
+                internal_question_embedding=chain_emb.get(
+                    "internal_question_embedding"
+                ),
+                internal_answer_embedding=chain_emb.get("internal_answer_embedding"),
             )
 
             def convert_scores(obj):
@@ -460,9 +507,25 @@ def compute_coherence_scores(
                     logger.warning(f"Sample {idx}: pool scoring failed: {e}")
 
         if internal_pool_metric is not None and len(sample_embeddings) > 1:
-            pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
-            pool_answer_embeds = [e["answer_embedding"] for e in sample_embeddings]
-            pool_question_embeds = [e["question_embedding"] for e in sample_embeddings]
+            has_internal = (
+                sample_embeddings[0].get("internal_step_embeddings") is not None
+            )
+            if has_internal:
+                pool_step_embeds = [
+                    e["internal_step_embeddings"] for e in sample_embeddings
+                ]
+                pool_answer_embeds = [
+                    e["internal_answer_embedding"] for e in sample_embeddings
+                ]
+                pool_question_embeds = [
+                    e["internal_question_embedding"] for e in sample_embeddings
+                ]
+            else:
+                pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
+                pool_answer_embeds = [e["answer_embedding"] for e in sample_embeddings]
+                pool_question_embeds = [
+                    e["question_embedding"] for e in sample_embeddings
+                ]
             try:
                 pool_results = internal_pool_metric.score_pool(
                     pool_step_embeds, pool_answer_embeds, pool_question_embeds
@@ -499,11 +562,20 @@ def process_sample_sequential(
 ) -> tuple[List[Dict[str, torch.Tensor]], List[Dict[str, float]]]:
 
     assert not (
-        omnimodal_encoder and (text_encoder or multimodal_encoder or audio_encoder)
-    ), "Cannot use omnimodal encoder together with separate text/multimodal/audio encoders"
+        omnimodal_encoder and (multimodal_encoder or audio_encoder)
+    ), "Cannot use omnimodal encoder together with separate multimodal/audio encoders"
     assert (omnimodal_encoder is not None) or (
         text_encoder is not None
     ), "At least one encoder must be provided"
+
+    # When both an omnimodal_encoder and a (non-CLAP) TextEncoder are passed,
+    # the TextEncoder is used ONLY to recompute step/question/answer embeddings
+    # for InternalCoherenceMetric.
+    use_text_for_internal = (
+        omnimodal_encoder is not None
+        and text_encoder is not None
+        and text_encoder != "clap"
+    )
 
     if logger and (sample_idx + 1) % 10 == 0:
         logger.info(f"Processing sample {sample_idx + 1}")
@@ -513,7 +585,11 @@ def process_sample_sequential(
     for chain in cot_chains:
 
         if modal_embeddings is None:
-            if text_encoder != "clap" and text_encoder is not None:
+            if (
+                text_encoder != "clap"
+                and text_encoder is not None
+                and not use_text_for_internal
+            ):
                 step_embeddings = text_encoder.encode_cot_steps(
                     chain.steps, question=sample.question
                 )
@@ -687,6 +763,23 @@ def process_sample_sequential(
             "text_final_answer": chain.final_answer,
         }
 
+        if use_text_for_internal:
+            steps_for_text = chain.steps if chain.steps else ["ERROR"]
+            internal_step_embeddings = text_encoder.encode_cot_steps(
+                steps_for_text, question=sample.question
+            )
+            internal_question_embedding = text_encoder(sample.question)
+            internal_answer_embedding = text_encoder(chain.final_answer)
+            chain_embedding_data["internal_step_embeddings"] = (
+                internal_step_embeddings.cpu()
+            )
+            chain_embedding_data["internal_question_embedding"] = (
+                internal_question_embedding.cpu()
+            )
+            chain_embedding_data["internal_answer_embedding"] = (
+                internal_answer_embedding.cpu()
+            )
+
         sample_embeddings.append(chain_embedding_data)
 
     if save_embeddings_dir:
@@ -724,6 +817,9 @@ def process_sample_sequential(
             text_steps=chain_emb.get("text_steps"),
             text_query=chain_emb.get("text_query"),
             text_final_answer=chain_emb.get("text_final_answer"),
+            internal_step_embeddings=chain_emb.get("internal_step_embeddings"),
+            internal_question_embedding=chain_emb.get("internal_question_embedding"),
+            internal_answer_embedding=chain_emb.get("internal_answer_embedding"),
         )
 
         def convert_scores(obj):
@@ -757,9 +853,23 @@ def process_sample_sequential(
                     logger.warning(f"Pool scoring failed for sample {sample_idx}: {e}")
 
     if internal_pool_metric is not None and len(sample_embeddings) > 1:
-        pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
-        pool_answer_embeds = [e["answer_embedding"] for e in sample_embeddings]
-        pool_question_embeds = [e["question_embedding"] for e in sample_embeddings]
+        has_internal = (
+            sample_embeddings[0].get("internal_step_embeddings") is not None
+        )
+        if has_internal:
+            pool_step_embeds = [
+                e["internal_step_embeddings"] for e in sample_embeddings
+            ]
+            pool_answer_embeds = [
+                e["internal_answer_embedding"] for e in sample_embeddings
+            ]
+            pool_question_embeds = [
+                e["internal_question_embedding"] for e in sample_embeddings
+            ]
+        else:
+            pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
+            pool_answer_embeds = [e["answer_embedding"] for e in sample_embeddings]
+            pool_question_embeds = [e["question_embedding"] for e in sample_embeddings]
         try:
             pool_results = internal_pool_metric.score_pool(
                 pool_step_embeds, pool_answer_embeds, pool_question_embeds
@@ -1242,6 +1352,15 @@ def main():
                         text_steps=chain_emb.get("text_steps"),
                         text_query=chain_emb.get("text_query"),
                         text_final_answer=chain_emb.get("text_final_answer"),
+                        internal_step_embeddings=chain_emb.get(
+                            "internal_step_embeddings"
+                        ),
+                        internal_question_embedding=chain_emb.get(
+                            "internal_question_embedding"
+                        ),
+                        internal_answer_embedding=chain_emb.get(
+                            "internal_answer_embedding"
+                        ),
                     )
 
                     def convert_scores(obj):
@@ -1278,13 +1397,29 @@ def main():
                             logger.warning(f"Sample {idx}: pool scoring failed: {e}")
 
                 if internal_pool_metric is not None and len(sample_embeddings) > 1:
-                    pool_step_embeds = [e["step_embeddings"] for e in sample_embeddings]
-                    pool_answer_embeds = [
-                        e["answer_embedding"] for e in sample_embeddings
-                    ]
-                    pool_question_embeds = [
-                        e["question_embedding"] for e in sample_embeddings
-                    ]
+                    has_internal = (
+                        sample_embeddings[0].get("internal_step_embeddings") is not None
+                    )
+                    if has_internal:
+                        pool_step_embeds = [
+                            e["internal_step_embeddings"] for e in sample_embeddings
+                        ]
+                        pool_answer_embeds = [
+                            e["internal_answer_embedding"] for e in sample_embeddings
+                        ]
+                        pool_question_embeds = [
+                            e["internal_question_embedding"] for e in sample_embeddings
+                        ]
+                    else:
+                        pool_step_embeds = [
+                            e["step_embeddings"] for e in sample_embeddings
+                        ]
+                        pool_answer_embeds = [
+                            e["answer_embedding"] for e in sample_embeddings
+                        ]
+                        pool_question_embeds = [
+                            e["question_embedding"] for e in sample_embeddings
+                        ]
                     try:
                         pool_results = internal_pool_metric.score_pool(
                             pool_step_embeds, pool_answer_embeds, pool_question_embeds

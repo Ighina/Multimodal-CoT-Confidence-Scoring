@@ -138,7 +138,11 @@ class ChainConfidenceScorer(nn.Module):
         # --- NEW TEXT PARAMETERS ---
         text_steps: Optional[List[str]] = None,
         text_query: Optional[str] = None,
-        text_final_answer: Optional[str] = None
+        text_final_answer: Optional[str] = None,
+        # --- Optional separate embeddings for InternalCoherenceMetric ---
+        internal_step_embeddings: Optional[torch.Tensor] = None,
+        internal_question_embedding: Optional[torch.Tensor] = None,
+        internal_answer_embedding: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
 
         if modal_embeddings is None and image_embeddings is not None:
@@ -153,9 +157,21 @@ class ChainConfidenceScorer(nn.Module):
 
         # 1. Internal coherence (Embeddings)
         internal_scores = self.internal_metric(
-            step_embeddings=step_embeddings,
-            question_embedding=question_embedding,
-            answer_embedding=answer_embedding
+            step_embeddings=(
+                internal_step_embeddings
+                if internal_step_embeddings is not None
+                else step_embeddings
+            ),
+            question_embedding=(
+                internal_question_embedding
+                if internal_question_embedding is not None
+                else question_embedding
+            ),
+            answer_embedding=(
+                internal_answer_embedding
+                if internal_answer_embedding is not None
+                else answer_embedding
+            ),
         )
         results['internal'] = internal_scores
 
