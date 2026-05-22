@@ -172,7 +172,23 @@ def main():
         "--max_subset_size",
         type=int,
         default=None,
-        help="Largest subset size to fuse with EM (default = all).",
+        help=(
+            "Largest subset size to fuse with EM (default = all). Lower this "
+            "for tractability when many scores are provided — the powerset "
+            "grows combinatorially and EM has to fit a Gaussian in "
+            "subset-size dimensions per call."
+        ),
+    )
+    parser.add_argument(
+        "--covariance_type",
+        type=str,
+        default="full",
+        choices=["full", "tied", "diag", "spherical"],
+        help=(
+            "Covariance shape for the EM GaussianMixture. Use 'diag' or "
+            "'spherical' to keep EM tractable when fusing many features "
+            "(fewer free parameters than 'full')."
+        ),
     )
     parser.add_argument(
         "--output_file",
@@ -259,7 +275,8 @@ def main():
         for combo in combinations(score_names, k):
             try:
                 fused = compute_em_fused_embeddings_only(
-                    [arrays[name] for name in combo]
+                    [arrays[name] for name in combo],
+                    covariance_type=args.covariance_type,
                 )
                 auroc = safe_auroc(fused, labels)
             except Exception as e:
@@ -303,6 +320,9 @@ def main():
                     "combined_path": args.combined_path,
                     "n_examples": n_examples,
                     "n_chains": n_chains,
+                    "min_subset_size": min_size,
+                    "max_subset_size": max_size,
+                    "covariance_type": args.covariance_type,
                     "results": results,
                 },
                 f,
