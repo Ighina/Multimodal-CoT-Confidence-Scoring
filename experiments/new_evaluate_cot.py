@@ -31,6 +31,7 @@ from datasets import load_dataset
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.evaluation.metrics import evaluate_confidence_scores, compare_methods
+from src.coherence.expectation_maximization import compute_em_fused_embeddings_only
 
 
 def load_json(file_path: str) -> List:
@@ -147,7 +148,6 @@ def extract_labels(
         labels.append(example_labels)
 
     return np.array(labels)
-
 
 def extract_score_arrays(
     scores_data: List[List[Dict]], n_chains: int, indices: List[int] = None
@@ -614,6 +614,7 @@ def create_aggregation_methods(
     score_arrays: Dict[str, np.ndarray],
     labels: np.ndarray,
     answers: np.ndarray = None,
+    em_methods: List[str] = None
 ) -> Dict[str, np.ndarray]:
     """
     Create various confidence aggregation methods.
@@ -624,6 +625,8 @@ def create_aggregation_methods(
         answers: Optional object array (num_examples, n_chains) of extracted
                  answer letters ("A"/"B"/"C"/"D" or None).  When provided,
                  consensus-boosted methods are added.
+        em_methods: If included, it pass the relative methods to be aggregated with 
+                    Expectation Maximization
 
     Returns:
         Dictionary mapping method names to confidence arrays
@@ -971,6 +974,20 @@ def create_aggregation_methods(
     if answers is not None:
         add_consensus_methods(methods, score_arrays, answers)
 
+    # Ensure you are passing orthogonal metrics!
+    # E.g., one for cross-modal, one for internal coherence, one for decisiveness.
+    if em_methods is not None:
+        em_scores = []
+        for method in em_methods:
+            try:
+                assert method in em_methods, "The method defined for Expectation Maximization Fusion is not among the available methods"
+            except AssertionError:
+                pass
+            em_scores.append(methods[method])
+        assert len(em_methods)>1, "You passed less than two valid methods for Expectation Maximization Fusion: please check the names you passed are correct!"
+
+    methods["em_embeddings_only"] = compute_em_fused_embeddings_only(embedding_features)
+
     return methods
 
 
@@ -1133,6 +1150,7 @@ def run_single_evaluation(
     calibrate: bool = False,
     calibration_holdout: float = 0.3,
     calibration_type: str = "logistic",
+    em_methods: List[str] = None
 ) -> Tuple[Dict, Dict]:
     """
     Run a single evaluation iteration.
@@ -1151,6 +1169,8 @@ def run_single_evaluation(
         calibration_holdout: Fraction of examples used as the calibration set
             when calibrate=True.
         calibration_type: Calibrator type ("logistic" or "isotonic").
+        em_methods: If included, it pass the relative methods to be aggregated with 
+                    Expectation Maximization
 
     Returns:
         Tuple of (method_results, comparison)
@@ -1177,7 +1197,7 @@ def run_single_evaluation(
     answers = extract_answer_arrays(cots_data, n_chains, indices=random_indices)
 
     confidence_methods = create_aggregation_methods(
-        score_arrays, labels, answers=answers
+        score_arrays, labels, answers=answers, em_methods=em_methods
     )
 
     if allowed_methods is not None:
@@ -1390,6 +1410,7 @@ def run_evaluation_for_split(
     calibrate: bool = False,
     calibration_holdout: float = 0.3,
     calibration_type: str = "logistic",
+    em_methods: List[str] = None
 ) -> Dict:
     """
     Run evaluation (single or multiple experiments) for a given data split and
@@ -1413,6 +1434,7 @@ def run_evaluation_for_split(
                 calibrate=calibrate,
                 calibration_holdout=calibration_holdout,
                 calibration_type=calibration_type,
+                em_methods=em_methods
             )
             all_results.append(method_results)
             all_comparisons.append(comparison)
@@ -1440,6 +1462,7 @@ def run_evaluation_for_split(
             calibrate=calibrate,
             calibration_holdout=calibration_holdout,
             calibration_type=calibration_type,
+            em_methods=em_methods
         )
         return {
             "method_results": method_results,
@@ -1960,6 +1983,13 @@ def main():
         choices=["logistic", "isotonic"],
         help="Calibrator type: 'logistic' (Platt scaling) or 'isotonic' (default: logistic).",
     )
+    parser.add_argument(
+        "--expectation_maximization_methods",
+        nargs="+",
+        type=str,
+        required=False,
+        help="If included, it adds the expectation maximization method fusing the scores from the selected methods"
+    )
 
     args = parser.parse_args()
 
@@ -2030,6 +2060,7 @@ def main():
                 calibrate=args.calibrate,
                 calibration_holdout=args.calibration_holdout,
                 calibration_type=args.calibration_type,
+                em_methods=args.expectation_maximization_methods
             )
             print_split_summary(
                 results[subset_name],
@@ -2105,6 +2136,7 @@ def main():
                 calibrate=args.calibrate,
                 calibration_holdout=args.calibration_holdout,
                 calibration_type=args.calibration_type,
+                em_methods=args.expectation_maximization_methods
             )
             print_split_summary(n_overall, "OVERALL", args.multiple_experiments)
 
@@ -2167,6 +2199,7 @@ def main():
         calibrate=args.calibrate,
         calibration_holdout=args.calibration_holdout,
         calibration_type=args.calibration_type,
+        em_methods=args.expectation_maximization_methods
     )
     print_split_summary(
         overall_result, label="OVERALL", multiple_experiments=args.multiple_experiments
