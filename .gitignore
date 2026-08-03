@@ -37,8 +37,9 @@ ENV/
 .ipynb_checkpoints
 *.ipynb
 
-# Data and models
-data/
+# Data and models (evaluation/data/ holds small committed artifacts and is
+# deliberately NOT ignored)
+/data/
 models/
 *.pkl
 *.pt

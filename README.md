@@ -20,7 +20,7 @@ No logits, hidden states, or repeated sampling from the evaluated model are requ
 │   │   ├── cross_modal_coherence.py        # Grounding scores (G_avg, G_max) vs. inputs
 │   │   ├── cross_modal_coherence_sampling.py # Candidate-pool variants of grounding
 │   │   ├── chain_confidence.py             # Combined chain-level confidence scorer
-│   │   ├── answer_aggregation.py           # Geometry-weighted majority voting (Appendix D)
+│   │   ├── answer_aggregation.py           # Geometry-weighted majority voting (Sec. 3.5, App. J)
 │   │   ├── expectation_maximization.py     # EM-based embedding fusion utilities
 │   │   ├── nli_coherence.py / prm_coherence.py # Auxiliary text-based coherence signals
 │   │   └── answer_agreement_mixin.py
@@ -44,8 +44,12 @@ No logits, hidden states, or repeated sampling from the evaluated model are requ
 │   ├── README_run_experiments_temp.md      # Detailed usage guide for the pipeline
 │   ├── new_evaluate_cot.py         # Evaluation: AUROC/ECE/AURAC, bootstrap tests,
 │   │                               #   logistic-regression aggregation (C_chain)
-│   ├── evaluate_weighted_frequency.py      # Geometry-weighted voting evaluation (Appendix D)
+│   ├── evaluate_weighted_frequency.py      # Geometry-weighted voting evaluation (Sec. 3.5, App. J)
 │   └── run_self_verbalization_experiment.py # Self-verbalisation baseline generation
+├── evaluation/                     # Full paper evaluation stack (see evaluation/README.md):
+│   │                               #   100-run protocol, bootstrap significance tests,
+│   │                               #   all appendix analyses, LaTeX table generation
+│   └── data/                       # Committed small artifacts (splits, cluster caches)
 ├── examples/                       # Small usage examples
 ├── tests/                          # Unit tests for coherence and aggregation modules
 └── docs/ANSWER_AGGREGATION.md      # Documentation of the weighted-voting extension
@@ -105,13 +109,23 @@ python experiments/new_evaluate_cot.py \
 
 This computes AUROC, ECE, and AURAC per UNO-Bench split, fits the logistic-regression aggregation (`C_chain`), and runs the randomized repetitions and statistical tests reported in the paper.
 
-### 5. Geometry-weighted majority voting (Appendix D)
+### 5. Geometry-weighted majority voting (Section 3.5, Appendix J)
 
 ```bash
 python experiments/evaluate_weighted_frequency.py --help
 ```
 
 Re-weights sampled answers with the embedding-based confidence scores (`src/coherence/answer_aggregation.py`).
+
+### 6. Reproduce the paper's tables
+
+The complete evaluation stack used for the submission — the 100-run
+randomised protocol behind every table, the item-level bootstrap and paired
+significance tests, all appendix analyses (feature ablations, weight
+transferability, attention-style grounding, sampling-budget sweep,
+dispersion baselines, single-generation regime) and the LaTeX table
+generation — lives in [`evaluation/`](evaluation/README.md), with a
+script-by-script map to the paper's tables and appendices.
 
 ## Tests
 
