@@ -1,452 +1,120 @@
-# Multimodal Chain-of-Thought Confidence Scoring
+# Estimating Uncertainty of Omnimodal Large Language Models via External Omnimodal Embeddings
 
-A comprehensive framework for evaluating confidence in multimodal reasoning chains by measuring internal textual coherence and cross-modal alignment between reasoning steps and visual information.
+Code for the anonymous ACL submission *"Estimating Uncertainty of Omnimodal Large Language Models via External Omnimodal Embeddings"*.
 
-## Overview
+We propose a model-agnostic, sampling-free uncertainty quantification (UQ) framework for omni-modal LLMs. A generated Chain-of-Thought (CoT) and its final answer are projected into a shared semantic space with an external omnimodal embedding model (e.g., E5-Omni), and confidence is estimated from:
 
-This framework implements a novel approach to confidence estimation for Large Vision-Language Models (LVLMs) performing Chain-of-Thought (CoT) reasoning on multimodal tasks. The key insight is that confident, correct reasoning should exhibit:
+- **Grounding** (`G_avg`, `G_max`): alignment between reasoning steps and the multimodal inputs (audio, images, text), in uni-modal and omni-modal variants.
+- **Coherence** (`S_smooth`, `S_dens`, `S_goal`): local smoothness, semantic density, and answer convergence of the reasoning chain.
+- **`C_chain`**: a logistic-regression aggregation of the above signals.
 
-1. **Internal Textual Coherence**: Reasoning steps should flow logically and progress toward the goal
-2. **Cross-Modal Coherence**: Reasoning steps should align with visual information from images
-3. **Typicality**: Reasoning patterns should be similar to correct training examples
+No logits, hidden states, or repeated sampling from the evaluated model are required.
 
-## Features
+## Repository Structure
 
-- **🎯 Unified Multimodal CoT Generator** ⭐ NEW
-  - Support for 80+ vision and audio language models
-  - Seamless integration with UNO-Bench dataset
-  - Auto-detection of model types
-  - Batch processing with VLLM optimization
-  - See [**MULTIMODAL_COT_GENERATOR.md**](MULTIMODAL_COT_GENERATOR.md) for detailed usage
-
-- **Multi-level Coherence Analysis**
-  - Local smoothness: semantic similarity between consecutive steps
-  - Goal-directedness: progression toward the answer
-  - Cross-modal alignment: text-image coherence
-  - Contrastive scoring: alignment to true vs. distractor images
-
-- **Multiple Embedding Backends**
-  - Sentence Transformers for text
-  - CLIP/OpenCLIP for multimodal alignment
-  - Support for LVLM internal representations
-  - Audio embeddings (Wav2Vec2, CLAP)
-
-- **Density-based Anomaly Detection**
-  - KDE (Kernel Density Estimation)
-  - GMM (Gaussian Mixture Models)
-  - Neural density models
-
-- **Comprehensive Evaluation**
-  - AUC-ROC and AUC-PR
-  - Calibration metrics (ECE, MCE)
-  - Risk-coverage curves for selective prediction
-  - Abstention analysis
-
-- **Strong Baselines**
-  - CoT length
-  - Log probability
-  - Majority vote / Self-consistency
-  - LLM-as-judge
-  - Semantic entropy
+```
+├── src/
+│   ├── coherence/                  # Core scoring methods
+│   │   ├── internal_coherence.py           # S_smooth, S_dens, S_goal (chain geometry)
+│   │   ├── internal_coherence_sampling.py  # Candidate-pool variants of internal scores
+│   │   ├── cross_modal_coherence.py        # Grounding scores (G_avg, G_max) vs. inputs
+│   │   ├── cross_modal_coherence_sampling.py # Candidate-pool variants of grounding
+│   │   ├── chain_confidence.py             # Combined chain-level confidence scorer
+│   │   ├── answer_aggregation.py           # Geometry-weighted majority voting (Appendix D)
+│   │   ├── expectation_maximization.py     # EM-based embedding fusion utilities
+│   │   ├── nli_coherence.py / prm_coherence.py # Auxiliary text-based coherence signals
+│   │   └── answer_agreement_mixin.py
+│   ├── embeddings/                 # External encoders
+│   │   ├── omnimodal_encoder.py            # Omnimodal embedding models (e.g., E5-Omni)
+│   │   ├── multimodal_encoder.py           # CLIP-style image and audio encoders
+│   │   ├── text_encoder.py                 # Sentence-transformer text encoders
+│   │   └── embedding_utils.py              # Similarity computation, caching
+│   ├── coherence_models/           # Density models (KDE/GMM) and confidence heads
+│   ├── dataset/                    # Data loading and answer generation
+│   │   ├── uno_bench_loader.py             # UNO-Bench dataset loader
+│   │   ├── download_unobench.py            # Dataset download helper
+│   │   ├── cot_generator.py                # CoT generation (vLLM + OpenAI-compatible APIs)
+│   │   ├── multimodal_models.py            # vLLM configs for multimodal generators
+│   │   ├── create_gemini_cot_batch.py      # Build Gemini batch requests
+│   │   └── generate_gemini_batch_fixed.py  # Submit/poll Gemini batch jobs
+│   └── evaluation/                 # Metrics (AUROC, ECE, risk-coverage) and evaluator
+│       └── umpire_metrics.py               # Metric utilities for the UMPIRE baseline
+├── experiments/
+│   ├── run_experiments_temp.py     # Main pipeline: CoT generation → embeddings → scores
+│   ├── README_run_experiments_temp.md      # Detailed usage guide for the pipeline
+│   ├── new_evaluate_cot.py         # Evaluation: AUROC/ECE/AURAC, bootstrap tests,
+│   │                               #   logistic-regression aggregation (C_chain)
+│   ├── evaluate_weighted_frequency.py      # Geometry-weighted voting evaluation (Appendix D)
+│   └── run_self_verbalization_experiment.py # Self-verbalisation baseline generation
+├── examples/                       # Small usage examples
+├── tests/                          # Unit tests for coherence and aggregation modules
+└── docs/ANSWER_AGGREGATION.md      # Documentation of the weighted-voting extension
+```
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/multimodal-cot-confidence
-cd multimodal-cot-confidence
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Install package in development mode
-pip install -e .
 ```
 
-## Quick Start
-
-### 0. Generating Chain-of-Thought from Multimodal Models (NEW!)
-
-Generate CoT reasoning from 80+ vision/audio language models with a unified interface:
-
-```python
-from src.dataset.uno_bench_loader import UNOBenchLoader
-from src.dataset.cot_generator import CoTGenerator
-
-# Load UNO-Bench dataset
-loader = UNOBenchLoader(
-    data_path="path/to/uno_bench",
-    split="validation"
-)
-
-# Initialize CoT generator (model type auto-inferred)
-generator = CoTGenerator(
-    model_name="llava-hf/llava-1.5-7b-hf",
-    batch_size=8
-)
-
-# Generate CoT for a single sample
-sample = loader[0]
-chains = generator.generate_cot_from_sample(sample, num_chains=5)
-
-# Or batch process multiple samples
-chains = generator.generate_cot_from_samples_batch(loader.samples[:10])
-
-for chain in chains:
-    print(f"Final Answer: {chain.final_answer}")
-    print(f"Reasoning Steps: {chain.steps}")
-```
-
-**📖 For comprehensive usage guide, model list, and advanced examples, see [MULTIMODAL_COT_GENERATOR.md](MULTIMODAL_COT_GENERATOR.md)**
-
-### 1. Basic Usage
-
-```python
-from src.embeddings import TextEncoder, MultimodalEncoder
-from src.coherence import (
-    InternalCoherenceMetric,
-    CrossModalCoherenceMetric,
-    ChainConfidenceScorer
-)
-
-# Setup encoders
-text_encoder = TextEncoder(
-    model_name="sentence-transformers/all-mpnet-base-v2"
-)
-multimodal_encoder = MultimodalEncoder(
-    model_name="openai/clip-vit-large-patch14"
-)
-
-# Setup coherence metrics
-internal_metric = InternalCoherenceMetric(
-    similarity_metric="cosine",
-    aggregation="mean"
-)
-cross_modal_metric = CrossModalCoherenceMetric(
-    similarity_metric="cosine",
-    use_attention=True
-)
-
-# Create confidence scorer
-scorer = ChainConfidenceScorer(
-    internal_metric=internal_metric,
-    cross_modal_metric=cross_modal_metric
-)
-
-# Compute confidence for a reasoning chain
-step_embeddings = text_encoder.encode_cot_steps(reasoning_steps)
-image_embeddings = multimodal_encoder.encode_images(images)
-
-result = scorer(
-    step_embeddings=step_embeddings,
-    image_embeddings=image_embeddings
-)
-
-confidence = result['confidence']
-print(f"Confidence score: {confidence:.3f}")
-```
-
-### 2. Running Experiments
+Optional dependencies, depending on which components you run:
 
 ```bash
-# Run full experiment on UNO-Bench
-python experiments/run_experiment.py \
-    --config config/config.yaml \
-    --experiment_name my_experiment \
-    --device cuda
-
-# Run ablation study
-python experiments/ablation_study.py \
-    --config config/config.yaml \
-    --test_data path/to/test_data.pkl
+pip install vllm           # local CoT generation with open models (e.g., MiniCPM-o)
+pip install google-genai   # answer generation with Gemini
+pip install openai         # OpenAI-compatible API generation
+pip install qwen-omni-utils # required by the omnimodal encoder wrapper
 ```
 
-### 3. Configuration
+## Reproducing the Paper Pipeline
 
-Edit `config/config.yaml` to customize:
+### 1. Download UNO-Bench
 
-- Data sources and preprocessing
-- Model architectures and hyperparameters
-- Coherence metric weights
-- Training and evaluation settings
-- Logging and output options
-
-## Architecture
-
-### Project Structure
-
-```
-multimodal-cot-confidence/
-├── config/
-│   └── config.yaml              # Main configuration
-├── src/
-│   ├── dataset/
-│   │   ├── uno_bench_loader.py  # UNO-Bench dataset loader
-│   │   ├── cot_generator.py     # CoT generation from LVLMs (80+ models)
-│   │   ├── multimodal_models.py # Model-specific prompt formatters
-│   │   └── data_processor.py    # Data preprocessing
-│   ├── embeddings/
-│   │   ├── text_encoder.py      # Text embedding extraction
-│   │   ├── multimodal_encoder.py # Multimodal embeddings (CLIP)
-│   │   └── embedding_utils.py   # Similarity and caching utilities
-│   ├── coherence/
-│   │   ├── internal_coherence.py    # Internal textual coherence
-│   │   ├── cross_modal_coherence.py # Cross-modal alignment
-│   │   └── chain_confidence.py      # Combined confidence scoring
-│   ├── models/
-│   │   ├── confidence_head.py   # MLP for confidence prediction
-│   │   └── density_model.py     # Density estimation models
-│   ├── baselines/
-│   │   └── baseline_methods.py  # Baseline confidence methods
-│   ├── evaluation/
-│   │   ├── metrics.py           # Evaluation metrics
-│   │   └── evaluator.py         # Comprehensive evaluator
-│   └── utils/
-│       ├── visualization.py     # Plotting utilities
-│       └── logging_utils.py     # Logging and experiment tracking
-├── experiments/
-│   ├── run_experiment.py        # Main experiment script
-│   └── ablation_study.py        # Ablation study script
-├── requirements.txt
-├── setup.py
-└── README.md
+```bash
+python src/dataset/download_unobench.py
 ```
 
-### Key Components
+### 2. Generate answers / CoT chains
 
-#### 1. Internal Coherence Metric
+Either locally through vLLM (e.g., MiniCPM-o), via an OpenAI-compatible API, or with the Gemini batch scripts (`src/dataset/create_gemini_cot_batch.py` and `src/dataset/generate_gemini_batch_fixed.py`). Generation can also be run directly inside the main pipeline (step 3).
 
-Measures how well reasoning steps connect:
+### 3. Extract embeddings and compute scores
 
-- **Local Smoothness**: Cosine similarity between consecutive steps
-- **Goal-Directedness**: Progression toward answer embedding
-- **Semantic Density**: Overall compactness in embedding space
+`experiments/run_experiments_temp.py` runs the full pipeline (CoT generation → embedding extraction → scoring) and supports staged execution with `--save_cots/--load_cots` and `--save_embeddings/--load_embeddings`. For the paper's omni-modal setting:
 
-```python
-internal_scores = internal_metric(
-    step_embeddings=step_embeddings,
-    answer_embedding=answer_embedding
-)
-# Returns: {'overall', 'smoothness', 'goal_directedness', 'semantic_density'}
+```bash
+python experiments/run_experiments_temp.py \
+    --data_path uno-bench \
+    --skip_cot_generation --load_cots results/cots.json \
+    --omnimodal_encoder <e5-omni-model-path> \
+    --save_embeddings results/embeddings.json \
+    --save_scores results/scores.json
 ```
 
-#### 2. Cross-Modal Coherence Metric
+See `experiments/README_run_experiments_temp.md` for all options.
 
-Measures text-image alignment:
+### 4. Evaluate
 
-- **Step-Image Alignment**: Similarity of each step to images
-- **Contrastive Coherence**: Alignment to true vs. negative images
-- **Attention-Weighted**: Soft attention over image regions
-
-```python
-cross_modal_scores = cross_modal_metric(
-    step_embeddings=step_embeddings,
-    image_embeddings=image_embeddings,
-    negative_image_embeddings=negative_samples
-)
-# Returns: {'overall', 'alignment', 'contrastive_score', 'per_step_coherence'}
+```bash
+python experiments/new_evaluate_cot.py \
+    --cots_path results/cots.json \
+    --scores_path results/scores.json \
+    --output_file results/metrics.json \
+    --multiple_experiments --shuffle
 ```
 
-#### 3. Chain Confidence Scorer
+This computes AUROC, ECE, and AURAC per UNO-Bench split, fits the logistic-regression aggregation (`C_chain`), and runs the randomized repetitions and statistical tests reported in the paper.
 
-Combines all components:
+### 5. Geometry-weighted majority voting (Appendix D)
 
-```python
-result = scorer(
-    step_embeddings=step_embeddings,
-    image_embeddings=image_embeddings
-)
-# Returns: {
-#   'confidence': overall confidence score,
-#   'internal': internal coherence scores,
-#   'cross_modal': cross-modal scores,
-#   'density': density score (if enabled),
-#   'weights': component weights
-# }
+```bash
+python experiments/evaluate_weighted_frequency.py --help
 ```
 
-## Experiments
+Re-weights sampled answers with the embedding-based confidence scores (`src/coherence/answer_aggregation.py`).
 
-### Supported Benchmarks
+## Tests
 
-- **UNO-Bench**: Unified uni-modal and omni-modal reasoning tasks
-- **MMMU**: Massive Multimodal Understanding benchmark
-- **ScienceQA**: Science question answering with diagrams
-- **M3-Bench**: Multimodal reasoning tasks
-
-### Evaluation Metrics
-
-1. **Discrimination**
-   - AUC-ROC: Area under ROC curve
-   - AUC-PR: Area under precision-recall curve
-
-2. **Calibration**
-   - ECE: Expected Calibration Error
-   - MCE: Maximum Calibration Error
-   - Calibration curves
-
-3. **Selective Prediction**
-   - Risk-coverage curves
-   - Abstention accuracy at different thresholds
-
-4. **Correlation**
-   - Pearson and Spearman correlation with correctness
-
-### Ablation Studies
-
-The framework supports systematic ablation studies:
-
-```python
-ablations = [
-    'internal_only',      # Only internal coherence
-    'cross_modal_only',   # Only cross-modal coherence
-    'no_density',         # Without density component
-    'different_encoders', # CLIP vs sentence-transformers
-]
+```bash
+pytest tests/
 ```
-
-## Baseline Methods
-
-Implemented baselines for comparison:
-
-1. **CoT Length**: Longer chains = higher confidence
-2. **Log Probability**: Token-level probability from LVLM
-3. **Majority Vote**: Consistency across multiple samples
-4. **LLM-as-Judge**: Prompt-based confidence rating
-5. **Semantic Entropy**: Entropy across semantically clustered answers
-
-## Advanced Usage
-
-### Custom Coherence Metrics
-
-```python
-from src.coherence import InternalCoherenceMetric
-
-class CustomCoherenceMetric(InternalCoherenceMetric):
-    def compute_custom_score(self, step_embeddings):
-        # Your custom logic
-        return score
-
-custom_metric = CustomCoherenceMetric()
-```
-
-### Training Confidence Head
-
-```python
-from src.models import ConfidenceHead
-import torch.nn as nn
-
-# Create learnable confidence head
-head = ConfidenceHead(
-    input_dim=10,
-    hidden_dims=[512, 256, 128],
-    dropout=0.3
-)
-
-# Train on labeled data
-optimizer = torch.optim.Adam(head.parameters(), lr=0.001)
-criterion = nn.BCELoss()
-
-for features, labels in train_loader:
-    predictions = head(features)
-    loss = criterion(predictions, labels)
-    loss.backward()
-    optimizer.step()
-```
-
-### Integration with Your LVLM
-
-```python
-from src.data import CoTGenerator
-
-# Custom CoT generator for your model
-class MyLVLMGenerator(CoTGenerator):
-    def _generate_single_chain(self, question, images, **kwargs):
-        # Call your LVLM
-        output = self.model.generate(
-            question=question,
-            images=images,
-            **kwargs
-        )
-        return self._parse_output(output)
-
-generator = MyLVLMGenerator(model_name="my-lvlm")
-```
-
-## Results and Visualization
-
-The framework automatically generates:
-
-- Calibration curves
-- Risk-coverage plots
-- Confidence distributions
-- Method comparison charts
-- Ablation study visualizations
-
-Results are saved to the specified output directory and logged to TensorBoard and/or Weights & Biases.
-
-## Citation
-
-If you use this framework in your research, please cite:
-
-```bibtex
-@article{multimodal-cot-confidence-2024,
-  title={Confidence Scoring for Multimodal Chain-of-Thought Reasoning via Internal and Cross-Modal Coherence},
-  author={Your Name},
-  journal={arXiv preprint arXiv:XXXX.XXXXX},
-  year={2024}
-}
-```
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License - see LICENSE file for details.
-
-## Documentation
-
-- **[MULTIMODAL_COT_GENERATOR.md](MULTIMODAL_COT_GENERATOR.md)** - Complete guide for using the multimodal CoT generator with 80+ models
-- **[AUDIO_INTEGRATION.md](AUDIO_INTEGRATION.md)** - Audio modality integration and usage guide
-- **[README.md](README.md)** - This file: project overview and main framework usage
-
-## Acknowledgments
-
-This framework builds upon:
-
-- **UNO-Bench** for unified multimodal evaluation
-- **VLLM** for efficient LLM inference
-- **CLIP** for cross-modal embeddings
-- **Sentence Transformers** for text embeddings
-- **CMRF** and **MM-PEAR-CoT** for multimodal reasoning insights
-- **Semantic Entropy** work by Kuhn et al.
-
-## Contact
-
-For questions or issues, please:
-- Open an issue on GitHub
-- Contact: your.email@example.com
-
-## Roadmap
-
-Future enhancements:
-
-- [x] Support for audio modality
-- [x] Integration with 80+ vision/audio language models via VLLM
-- [ ] Support for video modality
-- [ ] Online learning for confidence calibration
-- [ ] Integration with more LVLMs (Gemini, GPT-4V, etc.)
-- [ ] Real-time confidence estimation
-- [ ] Active learning for selective annotation
-- [ ] Multi-lingual support
